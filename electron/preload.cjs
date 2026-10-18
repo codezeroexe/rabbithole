@@ -9,11 +9,13 @@ const call = async (channel, ...args) => {
 }
 
 contextBridge.exposeInMainWorld('rh', {
+  platform: process.platform,
   getSettings: () => call('settings:get'),
   setSettings: (patch, secrets) => call('settings:set', patch, secrets),
   listModels: (backend) => call('models:list', backend),
   complete: (prompt, schema) => call('ai:complete', prompt, schema),
   search: (query) => call('search:web', query),
+  news: (query) => call('search:news', query),
   openSettings: () => call('settings:open'),
   setMenuState: (state) => call('menu:state', state),
   onMenu: (fn) => { const h = (_e, cmd) => fn(cmd); ipcRenderer.on('menu', h); return () => ipcRenderer.off('menu', h) },

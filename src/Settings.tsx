@@ -1,8 +1,23 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { bridge } from './ai.ts'
+import { bridge, searchFor } from './ai.ts'
 import { wikiSearch } from './wiki.ts'
 import type { LocalModel, Settings } from './ai.ts'
+import { applyM3, DEFAULT_SEED, hslHex, hueSat, SEEDS } from './m3.ts'
+
+export type Theme = 'glass' | 'winui' | 'obsidian' | 'warm' | 'nothing' | 'm3'
+// The theme that matches the system: Liquid Glass on a Mac, WinUI 3 on Windows.
+export const nativeTheme = (): Theme => /Mac/.test(navigator.userAgent) ? 'glass' : /Windows/.test(navigator.userAgent) ? 'winui' : 'obsidian'
+// Each theme has light and dark palettes that follow the system appearance.
+export const THEMES: { value: Theme; label: string }[] = [
+  { value: 'glass', label: 'Liquid Glass' },
+  { value: 'winui', label: 'WinUI 3' },
+  { value: 'obsidian', label: 'Obsidian' },
+  { value: 'warm', label: 'Claude Warm' },
+  { value: 'nothing', label: 'Nothing OS 5' },
+  { value: 'm3', label: 'Material 3 Expressive' },
+]
+const loadSeed = () => { try { return JSON.parse(localStorage.getItem('rh.seed') ?? 'null') ?? DEFAULT_SEED } catch { return DEFAULT_SEED } }
 
 const HINTS: Record<string, string> = {
   local: 'A small model that runs inside the app: no LM Studio, Ollama or key. Download one once (it then works offline); web research uses keyless Wikipedia search.',
@@ -34,7 +49,11 @@ export function SettingsWindow() {
   const [initial, setInitial] = useState<Settings | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    try { document.documentElement.dataset.theme = (JSON.parse(localStorage.getItem('rh.theme') ?? '"obsidian"') as string).replace(/^dark$/, 'obsidian') } catch { document.documentElement.dataset.theme = 'obsidian' }
+    let t = nativeTheme()
+    try { t = (JSON.parse(localStorage.getItem('rh.theme') ?? JSON.stringify(t)) as string).replace(/^dark$/, 'obsidian') as Theme } catch { /* storage unavailable */ }
+    document.documentElement.dataset.theme = t
+    applyM3(t, loadSeed())
+    document.documentElement.dataset.platform = bridge?.platform ?? 'web'
     document.title = 'Settings'
     bridge?.getSettings().then(setInitial).catch((e) => setError((e as Error).message))
   }, [])
@@ -53,6 +72,22 @@ export function SettingsDialog({ initial, onClose, onSaved, standalone = false }
   const [options, setOptions] = useState<string[]>([])
   const [status, setStatus] = useState<{ kind: 'muted' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme as Theme) || nativeTheme())
+  // The theme applies at once, here and in the main window.
+  const pickTheme = (t: Theme) => {
+    setTheme(t)
+    document.documentElement.dataset.theme = t
+    applyM3(t, seed)
+    try { localStorage.setItem('rh.theme', JSON.stringify(t)) } catch { /* storage unavailable */ }
+    bridge?.setMenuState({ theme: t }).catch(() => {})
+  }
+  // Material 3: one seed color makes every color role. The main window follows the saved value.
+  const [seed, setSeed] = useState<string>(loadSeed)
+  const pickSeed = (hex: string) => {
+    setSeed(hex)
+    applyM3(theme, hex)
+    try { localStorage.setItem('rh.seed', JSON.stringify(hex)) } catch { /* storage unavailable */ }
+  }
   const [local, setLocal] = useState<LocalModel[]>([])
   const [progress, setProgress] = useState<number | null>(null)
   useEffect(() => { if (backend === 'local') bridge!.localModels().then(setLocal).catch(() => {}) }, [backend])
@@ -94,7 +129,7 @@ export function SettingsDialog({ initial, onClose, onSaved, standalone = false }
   const test = () => run('Testing', async () => {
     await persist()
     if (search !== 'none') {
-      const r = search === 'wikipedia' ? await wikiSearch('rabbit hole') : await bridge!.search('rabbit hole')
+      const r = search === 'wikipedia' ? await wikiSearch('rabbit hole') : await searchFor('rabbit hole', search)
       if (!r.length) throw new Error('Web search worked but returned no results.')
     }
     if (backend === 'offline') return 'Offline demo is ready.'
@@ -127,6 +162,47 @@ export function SettingsDialog({ initial, onClose, onSaved, standalone = false }
           <h2>Settings</h2>
           <button type="button" className="btn" onClick={onClose}>Close</button>
         </div>}
+
+        {standalone && <>
+          <h2 className="settings-h">Appearance</h2>
+          <div className="setting">
+            <label htmlFor="theme">Theme</label>
+            <select id="theme" className="field" value={theme} onChange={(e) => pickTheme(e.target.value as Theme)}>
+              {THEMES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            <p className="muted">Light or dark follows your system setting. Changes apply right away.</p>
+          </div>
+          {theme === 'm3' && (
+            <div className="setting">
+              <span className="label">Seed color</span>
+              <div className="wheel" role="group" aria-label="Seed color wheel">
+                {Array.from({ length: 12 }, (_, i) => {
+                  const hex = hslHex(i * 30, 0.6, 0.5), a = (i * 30 * Math.PI) / 180
+                  return <button key={hex} type="button" aria-label={`Hue ${i * 30}°`} aria-pressed={hueSat(seed).h === hueSat(hex).h}
+                    style={{ left: 110 + 93 * Math.cos(a), top: 110 + 93 * Math.sin(a), background: hex }} onClick={() => pickSeed(hex)} />
+                })}
+                <span className="seed">{seed.toUpperCase()}</span>
+              </div>
+              <div className="presets" role="group" aria-label="Wallpaper colors">
+                {SEEDS.map(([name, hex]) => <button key={hex} type="button" aria-label={name} title={name} aria-pressed={seed.toLowerCase() === hex.toLowerCase()} style={{ background: hex }} onClick={() => pickSeed(hex)} />)}
+                <label className="sr-only" htmlFor="seed-custom">Any color</label>
+                <input id="seed-custom" type="color" value={seed} onChange={(e) => pickSeed(e.target.value)} title="Any color" />
+              </div>
+              <p className="muted">Every color in the app is a tone of this one, as on Android.</p>
+            </div>
+          )}
+          <div className="setting">
+            <span className="label">Reading the graph</span>
+            <ul className="key">
+              <li><span className="swatch" style={{ border: '2px solid var(--active)' }} />Active: the node you are on.</li>
+              <li><span className="swatch" style={{ border: '1px solid var(--ctrl-border)', background: 'var(--surface)' }} />Opened: a node you visited.</li>
+              <li><span className="swatch" style={{ border: '1.5px dashed var(--ctrl-border)' }} />Suggestion: click to open it.</li>
+              <li><span className="swatch" style={{ border: '1.5px dashed var(--tangent)' }} />Tangent: a sideways jump, in italics.</li>
+              <li><span className="swatch" style={{ border: '2px solid var(--steer-ring)' }} />Steered: a topic you added yourself.</li>
+            </ul>
+          </div>
+          <h2 className="settings-h">Research</h2>
+        </>}
 
         <div className="setting">
           <label htmlFor="backend">Backend</label>
@@ -200,7 +276,7 @@ export function SettingsDialog({ initial, onClose, onSaved, standalone = false }
               : 'Each research note is based on the top search results, and only those pages are listed as sources.'}
           </p>
         </div>
-        {search !== 'none' && search !== 'wikipedia' && keyField(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
+        {search !== 'none' && search !== 'wikipedia' && search !== 'web' && keyField(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
 
         {!initial.encryption && <p className="error">This system has no secure key storage, so API keys cannot be saved.</p>}
         <p className="muted">Keys are encrypted with your system keychain and stay on this computer. They are sent only to the provider they belong to.</p>

@@ -29,4 +29,6 @@ dist-ssr
 # Nothing's proprietary fonts: private mockups only, never commit them.
 public/fonts/NType82*
 public/fonts/NDot55*
+# Anthropic's typefaces: private use only too.
+public/fonts/AnthropicSerif*
 release

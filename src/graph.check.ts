@@ -79,3 +79,65 @@ console.log('graph checks passed')
   const r = r0('{"children":[{"label":"Wine","teaser":"t"},{"label":"wine","teaser":"t"},{"label":"Beer","teaser":"t"},{"label":"Yogurt","teaser":"t"}]}', 2)
   assert.deepEqual(r.map((x) => x.label), ['Wine', 'Beer'])
 }
+
+// Reader links: article links become titles, other namespaces do not; a clicked link opens a child once.
+{
+  const { wikiLinkTitle } = await import('./wiki.ts')
+  const { linkNode } = await import('./graph.ts')
+  assert.equal(wikiLinkTitle('/wiki/Ada_Lovelace#Life'), 'Ada Lovelace')
+  assert.equal(wikiLinkTitle('//en.wikipedia.org/wiki/C%2B%2B'), 'C++')
+  assert.equal(wikiLinkTitle('/wiki/File:Cat.jpg'), null)
+  assert.equal(wikiLinkTitle('https://example.com/wiki/X'), null)
+  const r = newGraph('Minecraft')
+  const a = linkNode(r, 'root', 'Mojang Studios')
+  assert.equal(linkNode(r, 'root', 'Mojang Studios'), a)
+  assert.equal(kidsOf(r, 'root').length, 1)
+  assert.equal(kidsOf(r, 'root')[0].via, 'link')
+}
+
+// Narrowing: the whole path is the scope, steers pass down, and steering adds no node.
+{
+  const { steerOn, contextFor: ctxOf, addGhosts: add, find: get } = await import('./graph.ts')
+  const { mergeAlike, aspectName } = await import('./wikidata.ts')
+  const { mentions } = await import('./wiki.ts')
+  const d = newGraph('nothing')
+  d.nodes[0].ref = 'Nothing'
+  const before = d.nodes.length
+  steerOn(d, 'root', 'tech brand')
+  assert.equal(d.nodes.length, before)
+  assert.equal(get(d, 'root')!.steer, 'tech brand')
+  assert.equal(get(d, 'root')!.ref, undefined) // looked up again with the steer
+  add(d, 'root', [{ label: 'Products', teaser: '', tangent: false, kind: 'aspect', facet: { src: 'wd', key: 'P176<', of: 'Nothing (company)' } }])
+  const products = kidsOf(d, 'root')[0]
+  products.status = 'solid'
+  add(d, products.id, [{ label: 'Phone (2)', teaser: '', tangent: false, kind: 'thing', ref: 'Nothing Phone 2' }])
+  const phone = kidsOf(d, products.id)[0]
+  phone.status = 'solid'
+  // Another node may have its own "Products" aspect; an article appears only once in the graph.
+  add(d, phone.id, [{ label: 'Products', teaser: '', tangent: false, kind: 'aspect', facet: { src: 'wd', key: 'P176<', of: 'Nothing Phone 2' } }, { label: 'Phone (2)', teaser: '', tangent: false }])
+  assert.deepEqual(kidsOf(d, phone.id).map((n) => n.label), ['Products'])
+  const c = ctxOf(d, phone.id)
+  assert.equal(c.kind, 'thing')
+  assert.deepEqual(c.anchors.map((a) => a.label), ['nothing']) // aspects are not anchors, articles are
+  assert.deepEqual(c.qualifiers, ['tech brand']) // the seed's steer still narrows depth 2
+  assert.equal(ctxOf(d, products.id).kind, 'aspect')
+  // Older dives: anything below the seed reads as a cross, which must fit what is above it.
+  const old = newGraph('Minecraft')
+  add(old, 'root', [{ label: 'YouTube', teaser: '', tangent: false }])
+  assert.equal(ctxOf(old, kidsOf(old, 'root')[0].id).kind, 'cross')
+
+  assert.ok(mentions('a mid-engine sports car built by Ferrari', 'Car'))
+  assert.ok(mentions('popular Minecraft YouTubers', 'Minecraft'))
+  assert.ok(!mentions('a carpet maker', 'Car'))
+  assert.ok(mentions('He founded Nothing in 2020', 'Nothing (company)'))
+  const merged = mergeAlike([
+    { label: 'Products', facet: { src: 'wd', key: 'P176<', of: 'X' }, members: ['A', 'B', 'C'] },
+    { label: 'Makes', facet: { src: 'wd', key: 'P1056>', of: 'X' }, members: ['A', 'B', 'D'] },
+    { label: 'Founder', facet: { src: 'wd', key: 'P112>', of: 'X' }, members: ['P'] },
+    { label: 'Owners', facet: { src: 'wd', key: 'P1830<', of: 'X' }, members: ['P'] },
+  ])
+  assert.deepEqual(merged.map((a) => a.label), ['Products', 'Founder'])
+  assert.deepEqual(merged[0].members, ['A', 'B', 'C', 'D'])
+  assert.equal(aspectName('product or material produced', ['products', 'produces']), 'Products')
+  assert.equal(aspectName('founded by', ['founder']), 'Founded by')
+}

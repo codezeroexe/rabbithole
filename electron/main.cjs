@@ -27,11 +27,11 @@ const BACKENDS = {
   opencode: { label: 'OpenCode' },
 }
 // wikipedia is searched from the renderer (public API, no key); the others need a key and run here.
-const SEARCH = { wikipedia: 'Wikipedia (free, no key)', none: 'No web search', tavily: 'Tavily', brave: 'Brave Search' }
+const SEARCH = { web: 'Web: Bing + DuckDuckGo + Google News, pages read (free, no key)', wikipedia: 'Wikipedia only (free, no key)', none: 'No web search', tavily: 'Tavily', brave: 'Brave Search' }
 
 // ---------- Settings (secrets encrypted with the OS keychain via safeStorage) ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
-let settings = { backend: 'free', models: {}, urls: {}, search: 'wikipedia', secrets: {} }
+let settings = { backend: 'free', models: {}, urls: {}, search: 'web', secrets: {} }
 
 function loadSettings() {
   try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) } } catch { /* first run */ }
@@ -274,7 +274,78 @@ function tryGetSequence(context) {
 }
 
 // ---------- Web search add-on ----------
+// ---------- Keyless web search: DuckDuckGo's HTML results, then the top pages read as text ----------
+// ponytail: scrapes DuckDuckGo's no-JS page; if it starts asking for a captcha, research falls back
+// to Wikipedia. Upgrade path: a Brave or Tavily key in Settings.
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36'
+const decode = (s) => s.replace(/<[^>]+>/g, '').replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
+async function ddgSearch(query, n = 6) {
+  const r = await fetch('https://html.duckduckgo.com/html/', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': BROWSER_UA },
+    body: new URLSearchParams({ q: query }), signal: AbortSignal.timeout(12_000),
+  })
+  const html = await r.text()
+  if (!r.ok || /anomaly-modal|bots use DuckDuckGo/i.test(html)) throw new Error('DuckDuckGo is asking for a captcha right now.')
+  const out = []
+  for (const block of html.split(/<div class="result results_links/).slice(1)) {
+    if (/result--ad/.test(block.slice(0, 200))) continue
+    const a = block.match(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/)
+    if (!a) continue
+    let url = decode(a[1])
+    const wrapped = url.match(/[?&]uddg=([^&]+)/)
+    if (wrapped) url = decodeURIComponent(wrapped[1])
+    if (url.startsWith('//')) url = `https:${url}`
+    if (!/^https?:\/\//.test(url) || /duckduckgo\.com\/y\.js/.test(url)) continue
+    const snip = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/)
+    out.push({ title: decode(a[2]), url, snippet: snip ? decode(snip[1]) : '' })
+    if (out.length >= n) break
+  }
+  return out
+}
+// Bing and Google News publish their results as RSS: keyless, current, and dated.
+function rssItems(xml) {
+  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => {
+    const tag = (t) => { const x = m[1].match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)<\/${t}>`)); return x ? decode(x[1].replace(/^<!\[CDATA\[|\]\]>$/g, '')) : '' }
+    return { title: tag('title'), url: tag('link'), snippet: tag('description'), date: tag('pubDate'), source: tag('source') }
+  }).filter((i) => i.title && /^https?:\/\//.test(i.url))
+}
+async function rss(url) {
+  const r = await fetch(url, { headers: { 'user-agent': BROWSER_UA, accept: 'application/rss+xml, text/xml' }, signal: AbortSignal.timeout(10_000) })
+  if (!r.ok) throw new Error(`${new URL(url).hostname} answered ${r.status}`)
+  return rssItems(await r.text())
+}
+const bingSearch = async (query, n = 8) => (await rss(`https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}`)).slice(0, n)
+// Google News first (headlines from many outlets, newest included); Bing News if it fails.
+async function newsSearch(query, n = 8) {
+  const google = await rss(`https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`).catch(() => [])
+  const items = google.length ? google.map((i) => ({ ...i, title: i.source ? i.title.replace(new RegExp(`\\s+-\\s+${i.source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), '') : i.title, snippet: '' }))
+    : await rss(`https://www.bing.com/news/search?format=rss&q=${encodeURIComponent(query)}`).catch(() => [])
+  return items.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0)).slice(0, n)
+}
+
+// The readable text of a page: its paragraphs, without scripts, menus or markup. Text only, capped.
+async function readPage(url) {
+  try {
+    const r = await fetch(url, { headers: { 'user-agent': BROWSER_UA, accept: 'text/html' }, redirect: 'follow', signal: AbortSignal.timeout(8_000) })
+    if (!r.ok || !/text\/html/.test(r.headers.get('content-type') ?? '')) return ''
+    const html = (await r.text()).slice(0, 600_000).replace(/<(script|style|nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, '')
+    const paras = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => decode(m[1])).filter((p) => p.length > 60)
+    return paras.join(' ').slice(0, 1400)
+  } catch { return '' }
+}
+
 async function webSearch(query) {
+  if (settings.search === 'web') {
+    // Two engines, so one blocking or missing a page does not leave research with nothing.
+    const [bing, ddg] = await Promise.all([bingSearch(query).catch(() => []), ddgSearch(query).catch(() => [])])
+    const seen = new Set()
+    const key = (u) => u.replace(/^https?:\/\/(www\.)?/, '').replace(/[#?].*$/, '').replace(/\/$/, '')
+    const results = [...bing, ...ddg].filter((r) => !seen.has(key(r.url)) && seen.add(key(r.url))).slice(0, 8)
+    if (!results.length) throw new Error('Web search found nothing (Bing and DuckDuckGo).')
+    // Read the top three pages so research rests on more than one-line snippets.
+    const texts = await Promise.all(results.slice(0, 3).map((r) => readPage(r.url)))
+    return results.map((r, i) => ({ ...r, snippet: [r.snippet, texts[i]].filter(Boolean).join(' ').slice(0, 1600) }))
+  }
   const key = getSecret(settings.search)
   if (settings.search === 'none' || settings.search === 'wikipedia') return []
   if (!key) throw new Error(`Add your ${SEARCH[settings.search]} API key in Settings.`)
@@ -325,10 +396,17 @@ handle('settings:set', (patch, secrets) => {
   return publicSettings()
 })
 handle('settings:open', () => openSettings())
-handle('menu:state', (state) => { if (typeof state?.theme === 'string') { menuState.theme = state.theme; buildMenu() } })
+// The theme can change in the main window or in Settings; whichever changes it, the other follows.
+handle('menu:state', (state) => {
+  if (typeof state?.theme !== 'string' || state.theme === menuState.theme) return
+  menuState.theme = state.theme
+  buildMenu()
+  mainWin?.webContents.send('menu', `theme:${state.theme}`)
+})
 handle('models:list', (b) => listModels(b))
 handle('ai:complete', (prompt, schema) => complete(prompt, schema))
 handle('search:web', (query) => webSearch(query))
+handle('search:news', (query) => newsSearch(query))
 handle('local:list', () => localModels())
 ipcMain.handle('local:download', async (e, id) => {
   try { return { ok: true, value: await downloadLocal(id, (p) => e.sender.send('local:progress', id, p)) } } catch (err) { return { ok: false, error: err.message ?? String(err) } }
@@ -357,8 +435,17 @@ function makeWindow(opts, hash) {
   else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), hash ? { hash } : {})
   return win
 }
+// The app draws its own top bar. On macOS the window keeps its traffic lights and gets the real
+// sidebar material behind the page (Liquid Glass theme); on Windows 11 it gets Mica and the
+// system caption buttons drawn over the top bar.
+const overlay = () => ({ color: '#00000000', symbolColor: nativeTheme.shouldUseDarkColors ? '#ffffff' : '#1a1a1a', height: 52 })
+const chrome = () => process.platform === 'darwin'
+  ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 20 }, vibrancy: 'sidebar', visualEffectState: 'active', backgroundColor: '#00000000' }
+  : { titleBarStyle: 'hidden', titleBarOverlay: overlay(), ...(process.platform === 'win32' ? { backgroundMaterial: 'mica', backgroundColor: '#00000000' } : {}) }
+nativeTheme.on('updated', () => { if (mainWin && process.platform !== 'darwin') mainWin.setTitleBarOverlay(overlay()) })
+
 function createWindow() {
-  mainWin = makeWindow({ width: 1440, height: 900, minWidth: 720, minHeight: 520, title: 'Rabbithole' })
+  mainWin = makeWindow({ width: 1440, height: 900, minWidth: 720, minHeight: 520, title: 'Rabbithole', ...chrome() })
   mainWin.on('closed', () => { mainWin = null })
 }
 // Settings get their own small window, opened from the app menu or with Cmd/Ctrl+comma.
@@ -378,7 +465,7 @@ const send = (cmd) => { if (mainWin) mainWin.webContents.send('menu', cmd); else
 function buildMenu() {
   const mac = process.platform === 'darwin'
   const settingsItem = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: openSettings }
-  const themes = [['obsidian', 'Obsidian'], ['warm', 'Claude Warm'], ['nothing', 'Nothing OS 5']]
+  const themes = [['glass', 'Liquid Glass'], ['winui', 'WinUI 3'], ['obsidian', 'Obsidian'], ['warm', 'Claude Warm'], ['nothing', 'Nothing OS 5'], ['m3', 'Material 3 Expressive']]
   const breadth = ['Focus', 'Balanced', 'Wide', 'Spread']
   const template = [
     ...(mac ? [{ label: app.name, submenu: [
@@ -386,7 +473,7 @@ function buildMenu() {
       { role: 'services' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' },
     ] }] : []),
     { label: 'File', submenu: [
-      { label: 'New Topic', accelerator: 'CmdOrCtrl+N', click: () => send('new-topic') },
+      { label: 'New Dive', accelerator: 'CmdOrCtrl+N', click: () => send('new-topic') },
       { type: 'separator' },
       { label: 'Export Markdown…', accelerator: 'CmdOrCtrl+E', click: () => send('export-md') },
       { label: 'Export Obsidian Vault…', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('export-vault') },

@@ -16,14 +16,17 @@ export type Settings = {
   encryption: boolean
 }
 export type SearchResult = { title: string; url: string; snippet: string }
+export type NewsItem = { title: string; url: string; source: string; date: string }
 export type LocalModel = { id: string; label: string; size: string; downloaded: boolean }
 
 type Bridge = {
+  platform: string
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Pick<Settings, 'backend' | 'search' | 'models' | 'urls'>>, secrets?: Record<string, string | undefined>): Promise<Settings>
   listModels(backend: string): Promise<string[]>
   complete(prompt: string, schema?: object): Promise<string>
   search(query: string): Promise<SearchResult[]>
+  news(query: string): Promise<NewsItem[]>
   openSettings(): Promise<void>
   setMenuState(state: { theme: string }): Promise<void>
   onMenu(fn: (cmd: string) => void): () => void
@@ -84,13 +87,15 @@ const rec = (v: unknown) => (v && typeof v === 'object' ? (v as Record<string, u
 export function suggestPrompt(c: ExpandContext): string {
   return [
     `Topic path: ${c.path.join(' › ')}`,
-    `Expand the node "${c.label}" into sub-topics worth exploring next.`,
+    // The whole path is the question: each level narrows the ones above it.
+    `Read the path as one narrowing question: "${c.label}"${c.anchors.length ? ` as it relates to ${c.anchors.map((a) => a.label).join(', then ')}` : ''}${c.qualifiers.length ? `, narrowed to: ${c.qualifiers.join('; ')}` : ''}. Every item must fit all of it, not just "${c.label}".`,
+    c.kind === 'aspect' ? `"${c.label}" is one aspect of ${c.anchors[0]?.label ?? 'the topic above'}: list its specific members.` : `Expand the node "${c.label}" into sub-topics worth exploring next.`,
     c.steered.length ? `The user added these themselves, so lean strongly toward things like them: ${c.steered.join(', ')}.` : '',
     c.dismissed.length ? `The user rejected these, so avoid them and things like them: ${c.dismissed.join(', ')}.` : '',
     c.taste.length ? `Elsewhere in the graph the user steered toward: ${c.taste.join(', ')}.` : '',
     c.avoid.length ? `Already on the graph, do not repeat: ${c.avoid.join(', ')}.` : '',
-    c.hints?.length ? `Wikipedia's article on this links to: ${c.hints.join(', ')}. Prefer real, specific things like these.` : '',
-    `Every item must be a specific, named thing that belongs under "${c.label}" in this path: a real model, person, place, event, technique or sub-field. Never generic headings such as "History", "Key facts", "Rivals", "Today", "In pop culture", "Design" or "Economics".`,
+    c.hints?.length ? `These real articles already fit the whole path; choose from them: ${c.hints.join(', ')}.` : '',
+    c.hints?.length ? '' : `Every item must be a specific, named thing that belongs under "${c.label}" in this path: a real model, person, place, event, technique or sub-field. Never generic headings such as "History", "Key facts", "Rivals", "Today", "In pop culture", "Design" or "Economics".`,
     c.rolls ? 'The user asked for a fresh batch, so give different ideas from the obvious ones.' : '',
     `Give exactly ${c.focusCount + c.tangentCount} items: ${c.focusCount} that go deeper into "${c.label}" (tangent false)` +
       (c.tangentCount ? ` and ${c.tangentCount} lateral, surprising but related jumps (tangent true).` : '.'),
@@ -166,9 +171,19 @@ export function parseResearch(text: string, label: string, results: SearchResult
   return { summary: str(d.summary) || `No summary came back for ${label}.`, facts, sources, verified: results.length > 0 }
 }
 
-// search: 'none', 'wikipedia' (free, no key) or a keyed provider the main process calls.
+// Keyless 'web' mixes the open web (main process) with Wikipedia, so research never rests on one site.
+export async function searchFor(q: string, search: string): Promise<SearchResult[]> {
+  if (search === 'none') return []
+  if (search === 'wikipedia' || !bridge) return wikiSearch(q).catch(() => [])
+  if (search !== 'web') return bridge.search(q)
+  const [web, wiki] = await Promise.all([bridge.search(q).catch(() => []), wikiSearch(q, 2).catch(() => [])])
+  const seen = new Set(web.map((r) => r.url))
+  return [...web.slice(0, 5), ...wiki.filter((r) => !seen.has(r.url))]
+}
+
+// search: 'none', 'web' (free), 'wikipedia' (free) or a keyed provider the main process calls.
 export async function research(model: string, path: string[], search: string): Promise<Research> {
   const q = path.slice(-3).join(' ')
-  const results = search === 'wikipedia' ? await wikiSearch(q).catch(() => []) : search !== 'none' && bridge ? await bridge.search(q) : []
+  const results = await searchFor(q, search)
   return parseResearch(await complete(model, researchPrompt(path, results), researchSchema(results)), path[path.length - 1], results)
 }
