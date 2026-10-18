@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('rh', {
   getSettings: () => call('settings:get'),
   setSettings: (patch, secrets) => call('settings:set', patch, secrets),
   listModels: (backend) => call('models:list', backend),
-  complete: (prompt) => call('ai:complete', prompt),
+  complete: (prompt, schema) => call('ai:complete', prompt, schema),
   search: (query) => call('search:web', query),
+  localModels: () => call('local:list'),
+  downloadLocal: (id) => call('local:download', id),
+  onLocalProgress: (fn) => { const h = (_e, id, p) => fn(id, p); ipcRenderer.on('local:progress', h); return () => ipcRenderer.off('local:progress', h) },
 })

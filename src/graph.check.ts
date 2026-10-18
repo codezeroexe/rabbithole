@@ -51,7 +51,7 @@ assert.throws(() => extractJson('no json here'))
 
 // Suggestions: junk entries are dropped, tangent must be literally true.
 assert.deepEqual(parseSuggestions('{"children":[{"label":"A","teaser":"t","tangent":"yes"},{"label":5}]}'), [
-  { label: 'A', teaser: 't', tangent: false }, { label: '', teaser: '', tangent: false },
+  { label: 'A', teaser: 't', tangent: false },
 ])
 assert.throws(() => parseSuggestions('{"children":[]}'))
 
@@ -71,4 +71,11 @@ console.log('graph checks passed')
   const { linksInParagraphs } = await import('./wiki.ts')
   const html = '<p>A <a href="/wiki/Car">car</a> is a <a href="/wiki/Motor_vehicle">motor vehicle</a>. It was made by <a href="/wiki/Karl_Benz">Benz</a> and <a href="/wiki/File:X.jpg">x</a>.</p><p>See <a href="/wiki/Ford_Model_T#Hist">Model T</a>.</p>'
   assert.deepEqual(linksInParagraphs(html), ['Karl Benz', 'Ford Model T'])
+}
+
+// Repeated picks from small models collapse to distinct labels, capped at the number asked for.
+{
+  const r0 = parseSuggestions
+  const r = r0('{"children":[{"label":"Wine","teaser":"t"},{"label":"wine","teaser":"t"},{"label":"Beer","teaser":"t"},{"label":"Yogurt","teaser":"t"}]}', 2)
+  assert.deepEqual(r.map((x) => x.label), ['Wine', 'Beer'])
 }

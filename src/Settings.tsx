@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { bridge } from './ai.ts'
 import { wikiSearch } from './wiki.ts'
-import type { Settings } from './ai.ts'
+import type { LocalModel, Settings } from './ai.ts'
 
 const HINTS: Record<string, string> = {
+  local: 'A small model that runs inside the app: no LM Studio, Ollama or key. Download one once (it then works offline); web research uses keyless Wikipedia search.',
   free: 'Suggestions and notes come straight from Wikipedia: real, on-topic articles, no key and no model. For a light local model instead, use Ollama with a small one such as qwen2.5:0.5b or llama3.2:1b.',
   offline: 'Canned demo data about cars. Nothing leaves this computer.',
   anthropic: 'Claude models. Get a key at console.anthropic.com.',
@@ -38,11 +39,15 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
   const [options, setOptions] = useState<string[]>([])
   const [status, setStatus] = useState<{ kind: 'muted' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [local, setLocal] = useState<LocalModel[]>([])
+  const [progress, setProgress] = useState<number | null>(null)
+  useEffect(() => { if (backend === 'local') bridge!.localModels().then(setLocal).catch(() => {}) }, [backend])
+  useEffect(() => bridge!.onLocalProgress((_id, p) => setProgress(p)), [])
 
   const info = initial.backends.find((b) => b.id === backend)!
   // Load the model list whenever the backend changes and it can be reached without typing anything.
   useEffect(() => {
-    if (backend === 'offline' || backend === 'free' || (info.key === true && !initial.keysSet[backend])) return
+    if (backend === 'offline' || backend === 'free' || backend === 'local' || (info.key === true && !initial.keysSet[backend])) return
     loadModels()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend])
@@ -128,7 +133,26 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
 
         {info.key && keyField(backend, info.key === 'optional' ? 'API key (optional)' : 'API key')}
 
-        {backend !== 'offline' && backend !== 'free' && (
+        {backend === 'local' && (
+          <div className="setting">
+            <label htmlFor="local-model">Model</label>
+            <div className="row">
+              <select id="local-model" className="field" value={model} onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))}>
+                {local.map((m) => <option key={m.id} value={m.id}>{m.label} · {m.size}{m.downloaded ? ' · downloaded' : ''}</option>)}
+              </select>
+              {local.find((m) => m.id === model && !m.downloaded) && (
+                <button type="button" className="btn" disabled={busy} onClick={() => run('Downloading', async () => {
+                  setProgress(0)
+                  try { setLocal(await bridge!.downloadLocal(model)) } finally { setProgress(null) }
+                  return 'Downloaded. It runs offline from now on.'
+                })}>Download</button>
+              )}
+            </div>
+            {progress !== null && <progress className="field" value={progress} max={1} aria-label="Download progress" />}
+          </div>
+        )}
+
+        {backend !== 'offline' && backend !== 'free' && backend !== 'local' && (
           <div className="setting">
             <label htmlFor="model-name">Model</label>
             <div className="row">

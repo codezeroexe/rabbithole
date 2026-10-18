@@ -8,9 +8,9 @@ Download a build from the repo's **Actions** run (or **Releases**, for tagged ve
 
 | System | File | Notes |
 |---|---|---|
-| Windows | `Rabbithole-Setup-<version>-x64.exe` | Installer: pick a folder, adds Start menu and desktop shortcuts. ARM PCs: the `-arm64` file. |
+| Windows | `Rabbithole-Setup-<version>-x64.exe` | Installer: pick a folder, adds Start menu and desktop shortcuts. x64 PCs only. |
 | Windows | `Rabbithole-<version>-portable.exe` | No install: run it from anywhere, a USB stick included. |
-| macOS | `Rabbithole-<version>-arm64.dmg` / `-x64.dmg` | Apple silicon / Intel. Drag to Applications. |
+| macOS | `Rabbithole-<version>-arm64.dmg` | Apple silicon only. Drag to Applications. |
 | Linux | `Rabbithole-<version>-x86_64.AppImage` | `chmod +x` it, then run it. |
 
 To pin it: on Windows, right-click the running app in the taskbar and choose **Pin to taskbar**. On macOS, right-click it in the Dock, then **Options › Keep in Dock**.
@@ -24,6 +24,7 @@ Open **Settings** in the header and pick one:
 | Backend | Needs | Good for |
 |---|---|---|
 | Free: Wikipedia (default) | nothing | any topic, no key, no model: every card is a real Wikipedia article linked from its parent |
+| Built-in tiny model | a one-time download (400 MB, or 1.1 GB for the better model) | a real model running inside the app: no LM Studio, Ollama or key |
 | Offline demo | nothing | trying the app without internet (car topics only) |
 | Anthropic, OpenAI, Google Gemini | an API key | fast, high-quality suggestions |
 | OpenRouter | one API key | hundreds of models, some free |

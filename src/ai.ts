@@ -16,13 +16,17 @@ export type Settings = {
   encryption: boolean
 }
 export type SearchResult = { title: string; url: string; snippet: string }
+export type LocalModel = { id: string; label: string; size: string; downloaded: boolean }
 
 type Bridge = {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Pick<Settings, 'backend' | 'search' | 'models' | 'urls'>>, secrets?: Record<string, string | undefined>): Promise<Settings>
   listModels(backend: string): Promise<string[]>
-  complete(prompt: string): Promise<string>
+  complete(prompt: string, schema?: object): Promise<string>
   search(query: string): Promise<SearchResult[]>
+  localModels(): Promise<LocalModel[]>
+  downloadLocal(id: string): Promise<LocalModel[]>
+  onLocalProgress(fn: (id: string, progress: number) => void): () => void
 }
 export const bridge = (globalThis as unknown as { rh?: Bridge }).rh
 
@@ -59,7 +63,8 @@ async function proxyComplete(model: string, prompt: string): Promise<string> {
 }
 
 // `model` only matters for the browser fallback; the desktop app uses its saved settings.
-const complete = (model: string, prompt: string) => (bridge ? bridge.complete(prompt) : proxyComplete(model, prompt))
+// schema: the reply's JSON shape. The built-in model is held to it token by token; other backends ignore it.
+const complete = (model: string, prompt: string, schema?: object) => (bridge ? bridge.complete(prompt, schema) : proxyComplete(model, prompt))
 
 // Pull the first JSON object out of a model reply, tolerating prose and ``` fences around it.
 export function extractJson(text: string): unknown {
@@ -85,23 +90,34 @@ export function suggestPrompt(c: ExpandContext): string {
     c.rolls ? 'The user asked for a fresh batch, so give different ideas from the obvious ones.' : '',
     `Give exactly ${c.focusCount + c.tangentCount} items: ${c.focusCount} that go deeper into "${c.label}" (tangent false)` +
       (c.tangentCount ? ` and ${c.tangentCount} lateral, surprising but related jumps (tangent true).` : '.'),
-    'Each label is 1 to 4 words. Each teaser is one sentence under 12 words.',
+    'Each label is 1 to 4 words. Each teaser is one plain statement under 12 words, not a question.',
     'Reply with only this JSON: {"children":[{"label":"...","teaser":"...","tangent":false}]}',
   ].filter(Boolean).join('\n')
 }
 
-export function parseSuggestions(text: string): Suggestion[] {
+export function parseSuggestions(text: string, max = Infinity): Suggestion[] {
   const d = rec(extractJson(text))
+  const seen = new Set<string>()
   const items = (Array.isArray(d.children) ? d.children : []).map((x) => {
     const o = rec(x)
     return { label: str(o.label), teaser: str(o.teaser), tangent: o.tangent === true }
-  })
+  }).filter((i) => i.label && !seen.has(i.label.toLowerCase()) && seen.add(i.label.toLowerCase())).slice(0, max)
   if (!items.some((i) => i.label)) throw new Error('The model returned no suggestions.')
   return items
 }
 
+// With Wikipedia hints, labels can only be picked from them: a tiny model then ranks real
+// articles instead of making up headings.
+export function suggestSchema(c: ExpandContext): object {
+  // Two spare items: small models sometimes repeat a pick, and parseSuggestions keeps the first n distinct.
+  const n = c.focusCount + c.tangentCount + 2
+  const label = c.hints?.length ? { enum: c.hints } : { type: 'string', minLength: 2, maxLength: 40 }
+  const item = { type: 'object', properties: { label, teaser: { type: 'string', minLength: 10, maxLength: 90 }, tangent: { type: 'boolean' } } }
+  return { type: 'object', properties: { children: { type: 'array', minItems: n, maxItems: n, items: item } } }
+}
+
 export async function suggest(model: string, c: ExpandContext): Promise<Suggestion[]> {
-  return parseSuggestions(await complete(model, suggestPrompt(c)))
+  return parseSuggestions(await complete(model, suggestPrompt(c), suggestSchema(c)), c.focusCount + c.tangentCount)
 }
 
 export function researchPrompt(path: string[], results: SearchResult[]): string {
@@ -127,6 +143,14 @@ export function researchPrompt(path: string[], results: SearchResult[]): string 
   return lines.join('\n')
 }
 
+export function researchSchema(results: SearchResult[]): object {
+  const fact = { type: 'object', properties: { k: { type: 'string', maxLength: 30 }, v: { type: 'string', maxLength: 80 } } }
+  const sources = results.length
+    ? { type: 'array', maxItems: 3, items: { enum: results.map((_, i) => i + 1) } }
+    : { type: 'array', maxItems: 3, items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' } } } }
+  return { type: 'object', properties: { summary: { type: 'string', minLength: 40, maxLength: 600 }, facts: { type: 'array', maxItems: 4, items: fact }, sources } }
+}
+
 export function parseResearch(text: string, label: string, results: SearchResult[]): Research {
   const d = rec(extractJson(text))
   const facts: Fact[] = (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ k: str(rec(f).k), v: str(rec(f).v) })).filter((f) => f.k && f.v)
@@ -142,5 +166,5 @@ export function parseResearch(text: string, label: string, results: SearchResult
 export async function research(model: string, path: string[], search: string): Promise<Research> {
   const q = path.slice(-3).join(' ')
   const results = search === 'wikipedia' ? await wikiSearch(q).catch(() => []) : search !== 'none' && bridge ? await bridge.search(q) : []
-  return parseResearch(await complete(model, researchPrompt(path, results)), path[path.length - 1], results)
+  return parseResearch(await complete(model, researchPrompt(path, results), researchSchema(results)), path[path.length - 1], results)
 }

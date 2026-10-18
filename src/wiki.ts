@@ -154,8 +154,9 @@ export async function wikiSuggest(c: ExpandContext): Promise<{ ref: string; item
 // Lead-paragraph links for a model backend to draw on, so its suggestions stay on topic.
 export async function wikiHints(c: ExpandContext): Promise<{ ref: string; hints: string[] }> {
   const ref = await resolve(c)
-  const avoid = new Set(c.avoid.map(lc))
-  return { ref, hints: [...new Set(await leadLinks(ref))].filter((t) => !avoid.has(lc(t))).slice(0, 20).map(labelOf) }
+  // Everything already on the graph, the node itself and its path can never be picked again.
+  const avoid = new Set([...c.avoid, ...c.path, ref].flatMap((x) => [lc(x), lc(labelOf(x))]))
+  return { ref, hints: [...new Set(await leadLinks(ref))].filter((t) => !avoid.has(lc(t)) && !avoid.has(lc(labelOf(t)))).slice(0, 20).map(labelOf) }
 }
 
 export async function wikiResearch(path: string[], ref?: string): Promise<{ ref: string; research: Research }> {

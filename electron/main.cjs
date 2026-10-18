@@ -16,6 +16,7 @@ const TIMEOUT_MS = 300_000
 const BACKENDS = {
   free: { label: 'Free: Wikipedia (no key, no model)' },
   offline: { label: 'Offline demo' },
+  local: { label: 'Built-in tiny model (no install)', defaultModel: 'qwen3-0.6b' },
   anthropic: { label: 'Anthropic (Claude)', key: true, defaultModel: 'claude-opus-5-5' },
   openai: { label: 'OpenAI', key: true, baseUrl: 'https://api.openai.com/v1' },
   gemini: { label: 'Google Gemini', key: true, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
@@ -212,6 +213,66 @@ async function opencodeModels() {
   return (d.providers ?? []).flatMap((p) => Object.keys(p.models ?? {}).map((m) => `${p.id}/${m}`))
 }
 
+// ---------- Built-in tiny model (llama.cpp via node-llama-cpp) ----------
+// Downloaded once into userData/models, then runs on this computer: Metal, CUDA, Vulkan or CPU.
+const LOCAL = {
+// Benchmarked on an M4 (4 topics, suggest + research): Qwen3 0.6B 1.3 s per reply with good picks;
+// Qwen2.5 1.5B 2.9 s with the best picks. SmolLM2 360M was dropped: it repeated one label 4 times.
+  'qwen3-0.6b': { label: 'Qwen3 0.6B (fast)', size: '400 MB', uri: 'hf:unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf' },
+  'qwen2.5-1.5b': { label: 'Qwen2.5 1.5B (better, slower)', size: '1.1 GB', uri: 'hf:Qwen/Qwen2.5-1.5B-Instruct-GGUF/qwen2.5-1.5b-instruct-q4_k_m.gguf' },
+}
+const modelsDir = () => path.join(app.getPath('userData'), 'models')
+const localFile = (id) => path.join(modelsDir(), LOCAL[id].uri.split('/').pop())
+let nlc = null // the node-llama-cpp module (ESM, so loaded lazily)
+let llama = null
+let loaded = null // { id, model, context, grammar }
+let downloading = null
+
+async function localLib() {
+  nlc ??= await import('node-llama-cpp')
+  llama ??= await nlc.getLlama()
+  return nlc
+}
+function localModels() {
+  return Object.entries(LOCAL).map(([id, m]) => ({ id, label: m.label, size: m.size, downloaded: fs.existsSync(localFile(id)) }))
+}
+async function downloadLocal(id, onProgress) {
+  if (!LOCAL[id]) throw new Error(`Unknown model ${id}.`)
+  if (downloading) throw new Error('A download is already running.')
+  const { createModelDownloader } = await localLib()
+  fs.mkdirSync(modelsDir(), { recursive: true })
+  try {
+    downloading = await createModelDownloader({
+      modelUri: LOCAL[id].uri, dirPath: modelsDir(), fileName: path.basename(localFile(id)), showCliProgress: false, skipExisting: true,
+      onProgress: ({ totalSize, downloadedSize }) => onProgress(totalSize ? downloadedSize / totalSize : 0),
+    })
+    await downloading.download()
+  } finally { downloading = null }
+  return localModels()
+}
+async function localComplete(prompt, schema) {
+  const id = LOCAL[modelFor('local')] ? modelFor('local') : 'qwen3-0.6b'
+  if (!fs.existsSync(localFile(id))) throw new Error(`Download ${LOCAL[id].label} in Settings first.`)
+  const { LlamaChatSession } = await localLib()
+  if (loaded?.id !== id) {
+    await loaded?.model.dispose()
+    const model = await llama.loadModel({ modelPath: localFile(id) })
+    loaded = { id, model, context: await model.createContext({ contextSize: 4096, sequences: 2 }), json: await llama.getGrammarFor('json') }
+  }
+  // ponytail: 2 sequences, so a third parallel call waits for a free one.
+  let seq
+  while (!(seq = tryGetSequence(loaded.context))) await new Promise((ok) => setTimeout(ok, 100))
+  try {
+    const session = new LlamaChatSession({ contextSequence: seq, systemPrompt: SYSTEM })
+    // The grammar holds even a tiny model to the reply's JSON shape; thinking is off for speed.
+    const grammar = schema ? await llama.createGrammarForJsonSchema(schema) : loaded.json
+    return await session.prompt(prompt, { grammar, maxTokens: 700, temperature: 0.7, budgets: { thoughtTokens: 0 } })
+  } finally { seq.dispose() }
+}
+function tryGetSequence(context) {
+  try { return context.sequencesLeft > 0 ? context.getSequence() : null } catch { return null }
+}
+
 // ---------- Web search add-on ----------
 async function webSearch(query) {
   const key = getSecret(settings.search)
@@ -231,16 +292,18 @@ async function webSearch(query) {
 }
 
 // ---------- IPC ----------
-function complete(prompt) {
+function complete(prompt, schema) {
   const b = settings.backend
   if (b === 'anthropic') return anthropicComplete(prompt)
   if (b === 'opencode') return opencodeComplete(prompt)
+  if (b === 'local') return localComplete(prompt, schema)
   if (BACKENDS[b]?.baseUrl !== undefined) return compatComplete(b, prompt)
   throw new Error('Pick a backend in Settings.')
 }
 function listModels(b) {
   if (b === 'anthropic') return anthropicModels()
   if (b === 'opencode') return opencodeModels()
+  if (b === 'local') return Promise.resolve(Object.keys(LOCAL))
   if (BACKENDS[b]?.baseUrl !== undefined) return compatModels(b)
   return Promise.resolve([])
 }
@@ -260,8 +323,12 @@ handle('settings:set', (patch, secrets) => {
   return publicSettings()
 })
 handle('models:list', (b) => listModels(b))
-handle('ai:complete', (prompt) => complete(prompt))
+handle('ai:complete', (prompt, schema) => complete(prompt, schema))
 handle('search:web', (query) => webSearch(query))
+handle('local:list', () => localModels())
+ipcMain.handle('local:download', async (e, id) => {
+  try { return { ok: true, value: await downloadLocal(id, (p) => e.sender.send('local:progress', id, p)) } } catch (err) { return { ok: false, error: err.message ?? String(err) } }
+})
 
 // ---------- Window ----------
 function createWindow() {
