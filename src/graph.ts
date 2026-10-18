@@ -136,13 +136,26 @@ export function steerNode(g: Graph, pid: string, label: string): string {
 // a parent sits level with the middle of its children.
 // ponytail: card heights are estimates (cards clamp their text), not measured.
 export const COLUMN = 300
+export const SKELETONS = 4
+
 export function relayout(g: Graph): Record<string, { x: number; y: number }> {
   const pos: Record<string, { x: number; y: number }> = {}
   let cursor = 0
+  // Ghosts off the active branch show their title only, so they are shorter.
   const est = (n: GraphNode) =>
-    n.id === g.active ? 170 : n.status === 'dismissed' ? 44 : n.status === 'ghost' ? 92 : n.parent ? 100 : 110
+    n.id === g.active ? 170 : n.status === 'dismissed' ? 44 : n.status === 'ghost' ? (n.parent === g.active ? 92 : 48) : n.parent ? 100 : 110
   const place = (n: GraphNode, depth: number) => {
     const kids = kidsOf(g, n.id)
+    // While suggestions load, reserve room for skeleton cards: ids `<parent>~sk0` and up.
+    if (!kids.length && n.loading) {
+      const first = cursor
+      for (let i = 0; i < SKELETONS; i++) {
+        pos[`${n.id}~sk${i}`] = { x: (depth + 1) * COLUMN, y: cursor + 46 }
+        cursor += 92 + 14
+      }
+      pos[n.id] = { x: depth * COLUMN, y: (first + cursor - 14) / 2 }
+      return
+    }
     if (!kids.length) {
       const h = est(n)
       pos[n.id] = { x: depth * COLUMN, y: cursor + h / 2 }

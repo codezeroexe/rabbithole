@@ -29,7 +29,21 @@ function groupModels(ids: string[]): [string, string[]][] {
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
 }
 
-export function SettingsDialog({ initial, onClose, onSaved }: { initial: Settings; onClose: () => void; onSaved: (s: Settings) => void }) {
+// The desktop app's Settings window (index.html#settings): the same form, as the whole page.
+export function SettingsWindow() {
+  const [initial, setInitial] = useState<Settings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    try { document.documentElement.dataset.theme = (JSON.parse(localStorage.getItem('rh.theme') ?? '"obsidian"') as string).replace(/^dark$/, 'obsidian') } catch { document.documentElement.dataset.theme = 'obsidian' }
+    document.title = 'Settings'
+    bridge?.getSettings().then(setInitial).catch((e) => setError((e as Error).message))
+  }, [])
+  if (error) return <p className="error" role="alert" style={{ padding: 24 }}>{error}</p>
+  if (!initial) return null
+  return <SettingsDialog standalone initial={initial} onClose={() => window.close()} onSaved={() => {}} />
+}
+
+export function SettingsDialog({ initial, onClose, onSaved, standalone = false }: { initial: Settings; onClose: () => void; onSaved: (s: Settings) => void; standalone?: boolean }) {
   const [backend, setBackend] = useState(initial.backend)
   const [models, setModels] = useState(initial.models)
   const [urls, setUrls] = useState(initial.urls)
@@ -107,13 +121,12 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
     </div>
   )
 
-  return (
-    <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <form className="dialog settings" role="dialog" aria-modal="true" aria-label="Settings" onSubmit={save}>
-        <div className="dialog-head">
+  const form = (
+      <form className={standalone ? 'settings-page' : 'dialog settings'} role={standalone ? undefined : 'dialog'} aria-modal={standalone ? undefined : true} aria-label="Settings" onSubmit={save}>
+        {!standalone && <div className="dialog-head">
           <h2>Settings</h2>
           <button type="button" className="btn" onClick={onClose}>Close</button>
-        </div>
+        </div>}
 
         <div className="setting">
           <label htmlFor="backend">Backend</label>
@@ -195,9 +208,11 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
 
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={test} disabled={busy}>Test connection</button>
+          {standalone && <button type="button" className="btn" onClick={onClose}>Cancel</button>}
           <button type="submit" className="btn btn-primary" disabled={busy}>Save</button>
         </div>
       </form>
-    </div>
   )
+  if (standalone) return form
+  return <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>{form}</div>
 }

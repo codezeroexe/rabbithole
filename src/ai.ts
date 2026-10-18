@@ -24,6 +24,10 @@ type Bridge = {
   listModels(backend: string): Promise<string[]>
   complete(prompt: string, schema?: object): Promise<string>
   search(query: string): Promise<SearchResult[]>
+  openSettings(): Promise<void>
+  setMenuState(state: { theme: string }): Promise<void>
+  onMenu(fn: (cmd: string) => void): () => void
+  onSettingsChanged(fn: (s: Settings) => void): () => void
   localModels(): Promise<LocalModel[]>
   downloadLocal(id: string): Promise<LocalModel[]>
   onLocalProgress(fn: (id: string, progress: number) => void): () => void

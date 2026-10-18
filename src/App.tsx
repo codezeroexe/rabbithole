@@ -2,21 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import {
   addGhosts, clearGhosts, contextFor, dismissNode, exportMarkdown, exportVault, find, kidsOf, liveKids,
-  modeFor, newGraph, pathOf, relayout, steerNode, tangentsFor,
+  newGraph, pathOf, relayout, SKELETONS, steerNode, tangentsFor,
 } from './graph.ts'
 import type { Graph, GraphNode, Research, Suggestion } from './graph.ts'
 import { bridge, listProxyModels, research, suggest } from './ai.ts'
 import type { ModelOption, Settings } from './ai.ts'
-import { SettingsDialog } from './Settings.tsx'
 import { mockResearch, mockSuggest } from './mock.ts'
 import { wikiHints, wikiResearch, wikiSuggest } from './wiki.ts'
 
-type Theme = 'dark' | 'warm' | 'nothing'
+type Theme = 'obsidian' | 'warm' | 'nothing'
+// Each theme has light and dark palettes that follow the system appearance.
 const THEMES: { value: Theme; label: string }[] = [
-  { value: 'dark', label: 'Obsidian dark' },
+  { value: 'obsidian', label: 'Obsidian' },
   { value: 'warm', label: 'Claude Warm' },
   { value: 'nothing', label: 'Nothing OS 5' },
 ]
+// Four steps, one per number of tangents (0 to 3) among the 4 suggestions.
+const BREADTH = [{ label: 'Focus', spread: 20 }, { label: 'Balanced', spread: 50 }, { label: 'Wide', spread: 75 }, { label: 'Spread', spread: 100 }]
 const OFFLINE = 'offline'
 const FREE = 'free'
 
@@ -43,11 +45,10 @@ const X = () => (
 )
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>(() => load('rh.theme', 'dark'))
+  const [theme, setTheme] = useState<Theme>(() => { const t = load<string>('rh.theme', 'obsidian'); return (t === 'dark' ? 'obsidian' : t) as Theme })
   const [model, setModel] = useState<string>(() => load('rh.model', FREE))
   const [models, setModels] = useState<ModelOption[] | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [showSettings, setShowSettings] = useState(false)
   const settingsRef = useRef<Settings | null>(null)
   const [serverError, setServerError] = useState<string | null>(null)
   const [graph, setGraph] = useState<Graph | null>(() => load<Graph | null>('rh.graph', null))
@@ -61,7 +62,7 @@ export default function App() {
   const ref = useRef<Graph | null>(graph)
   const modelRef = useRef(model)
 
-  useEffect(() => { document.documentElement.dataset.theme = theme; save('rh.theme', theme) }, [theme])
+  useEffect(() => { document.documentElement.dataset.theme = theme; save('rh.theme', theme); bridge?.setMenuState({ theme }).catch(() => {}) }, [theme])
   useEffect(() => { modelRef.current = model; save('rh.model', model) }, [model])
   useEffect(() => {
     // Drop in-flight markers from a previous visit before saving.
@@ -70,8 +71,8 @@ export default function App() {
   useEffect(() => { settingsRef.current = settings }, [settings])
   useEffect(() => {
     if (bridge) {
-      bridge.getSettings().then((s) => { setSettings(s); if (s.backend === OFFLINE) setShowSettings(true) }).catch((e) => setServerError(e.message))
-      return
+      bridge.getSettings().then((s) => { setSettings(s); if (s.backend === OFFLINE) bridge!.openSettings() }).catch((e) => setServerError(e.message))
+      return bridge.onSettingsChanged(setSettings)
     }
     listProxyModels().then(setModels).catch((e) => setServerError(`OpenCode server not reachable (${e.message}). Run "npm run opencode" for real research; the offline demo still works.`))
   }, [])
@@ -200,6 +201,30 @@ export default function App() {
     if (best) select(best.id)
   }, [select])
 
+  const newTopic = () => {
+    if (!ref.current || confirm('Start a new topic? This clears the current graph.')) { ref.current = null; setGraph(null); setError(null) }
+  }
+  // Commands from the native menu bar (desktop app only). Kept in a ref so the listener is set once.
+  const menuRef = useRef<(cmd: string) => void>(() => {})
+  useEffect(() => {
+    menuRef.current = (cmd: string) => {
+      const g = ref.current
+      if (cmd.startsWith('theme:')) return setTheme(cmd.slice(6) as Theme)
+      if (cmd === 'new-topic') return newTopic()
+      if (!g) return
+      const n = find(g, g.active)
+      if (cmd === 'export-md') setExportMode('md')
+      else if (cmd === 'export-vault') setExportMode('vault')
+      else if (cmd === 'deeper') deeper()
+      else if (cmd === 'up' && n?.parent) select(n.parent)
+      else if (cmd === 'reroll') reroll()
+      else if (cmd === 'research' && n) doResearch(n.id)
+      else if (cmd === 'dismiss' && n?.parent) dismiss(n.id)
+      else if (cmd.startsWith('breadth:')) setSpread(BREADTH[Number(cmd.slice(8))]?.spread ?? g.spread)
+    }
+  })
+  useEffect(() => bridge?.onMenu((cmd) => menuRef.current(cmd)), [])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement
@@ -272,7 +297,7 @@ export default function App() {
         <div className="header-tools">
           {graph && <span className="stats">{graph.nodes.filter((n) => n.status !== 'dismissed').length} nodes · depth {pathOf(graph, graph.active).length - 1}</span>}
           {bridge ? (
-            <button type="button" className="btn" onClick={() => setShowSettings(true)}>
+            <button type="button" className="btn" onClick={() => bridge!.openSettings()}>
               Settings · {settings?.backends.find((b) => b.id === settings.backend)?.label ?? '…'}
             </button>
           ) : <>
@@ -326,6 +351,11 @@ export default function App() {
               </div>
               <div className="camera" style={{ transform: `translate(${pan.x - view.pos[graph.active].x}px, ${pan.y - view.pos[graph.active].y}px)` }}>
                 {view.edges.map((e) => <div key={e.id} className="edge" style={e.style} />)}
+                {view.skeletons.map((k) => (
+                  <div key={k.id} className="card-wrap" style={{ left: k.at.x, top: k.at.y, width: 180 }} aria-hidden="true">
+                    <div className="card skeleton"><span /><span /><span /></div>
+                  </div>
+                ))}
                 {view.cards.map((c) => (
                   <div key={c.n.id} className="card-wrap" style={c.wrap}>
                     <button type="button" className="card" style={c.style} onClick={() => select(c.n.id)} aria-label={c.aria}>
@@ -340,11 +370,14 @@ export default function App() {
                 ))}
               </div>
               <div className="bar">
-                <div className="slider">
-                  <label htmlFor="spread">Focus</label>
-                  <input id="spread" type="range" min={0} max={100} value={graph.spread} onChange={(e) => setSpread(Number(e.target.value))} aria-label="Focus to spread" />
-                  <span>Spread</span>
-                  <span className="mode">{modeFor(graph.spread)} · {tangentsFor(graph.spread)} tangent</span>
+                <div className="breadth" role="group" aria-labelledby="breadth-label">
+                  <span id="breadth-label" className="breadth-label">Breadth</span>
+                  <div className="segmented">
+                    {BREADTH.map((b, i) => (
+                      <button key={b.label} type="button" aria-pressed={tangentsFor(graph.spread) === i}
+                        title={`${4 - i} deeper, ${i} tangent${i === 1 ? '' : 's'}`} onClick={() => setSpread(b.spread)}>{b.label}</button>
+                    ))}
+                  </div>
                 </div>
                 <form onSubmit={steer}>
                   <label className="sr-only" htmlFor="steer">Steer with your own node</label>
@@ -408,15 +441,11 @@ export default function App() {
               <button type="button" className="btn" onClick={reroll} disabled={!!a.loading}>Re-roll suggestions</button>
               <button type="button" className="btn" onClick={() => doResearch(a.id)} disabled={!!a.researching}>Research again</button>
               <button type="button" className="btn" onClick={() => dismiss(a.id)} disabled={!a.parent}>Dismiss node</button>
-              <button type="button" className="btn" onClick={() => { if (confirm('Start a new topic? This clears the current graph.')) { ref.current = null; setGraph(null); setError(null) } }}>New topic</button>
+              <button type="button" className="btn" onClick={newTopic}>New topic</button>
             </div>
           </aside>
         )}
       </div>
-
-      {showSettings && settings && bridge && (
-        <SettingsDialog initial={settings} onClose={() => setShowSettings(false)} onSaved={setSettings} />
-      )}
 
       {exportMode && graph && (
         <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) setExportMode(null) }}>
@@ -465,6 +494,13 @@ function buildView(g: Graph) {
       },
     }
   })
+  // Placeholder cards (and their edges) for a node whose suggestions are loading.
+  const skeletons = g.nodes.filter((n) => n.loading && pos[`${n.id}~sk0`]).flatMap((n) =>
+    Array.from({ length: SKELETONS }, (_, i) => ({ id: `${n.id}~sk${i}`, from: pos[n.id], at: pos[`${n.id}~sk${i}`] })))
+  for (const s of skeletons) {
+    const dx = s.at.x - s.from.x, dy = s.at.y - s.from.y
+    edges.push({ id: s.id, style: { left: s.from.x, top: s.from.y, width: Math.hypot(dx, dy), borderTop: '1px dashed var(--edge-faint)', transform: `rotate(${(Math.atan2(dy, dx) * 180) / Math.PI}deg)`, opacity: 1 } })
+  }
 
   const cards = g.nodes.map((n: GraphNode) => {
     const ghost = n.status === 'ghost', dis = n.status === 'dismissed'
@@ -480,12 +516,13 @@ function buildView(g: Graph) {
       n, busy, tag,
       tagColor: isActive || n.steered ? 'var(--eyebrow)' : 'var(--text2)',
       aria: `${ghost ? 'Open suggestion' : dis ? 'Restore' : 'Focus'} ${n.label}`,
-      body: dis ? '' : ghost ? n.teaser ?? '' : n.research?.summary ?? n.teaser ?? '',
+      body: dis || (ghost && n.parent !== g.active) ? '' : ghost ? n.teaser ?? '' : n.research?.summary ?? n.teaser ?? '',
       lines: isActive ? 5 : 2,
       wrap: {
         left: pos[n.id].x, top: pos[n.id].y,
         width: isActive ? 250 : isRoot ? 220 : dis ? 130 : ghost ? 180 : 200,
-        opacity: dis ? 0.45 : ghost ? (n.parent === g.active ? 1 : 0.4) : onPath.has(n.id) ? 1 : 0.7,
+        // Text keeps full contrast everywhere; distance is shown by size and border, not fading.
+        opacity: 1,
       },
       style: {
         padding: dis ? '6px 10px' : isActive ? '14px 16px' : '10px 12px',
@@ -496,11 +533,11 @@ function buildView(g: Graph) {
         fontSize: isActive ? 'var(--title-size)' : dis ? 12 : 14,
         fontWeight: ghost || dis ? 400 : isActive || isRoot ? 600 : 500,
         fontStyle: n.tangent ? 'italic' : 'normal',
-        color: ghost ? (n.tangent ? 'var(--tangent-text)' : 'var(--text2)') : dis ? 'var(--muted)' : 'var(--text)',
-        textDecoration: dis ? 'line-through' : 'none',
+        color: ghost ? (n.tangent ? 'var(--tangent-text)' : 'var(--text2)') : dis ? 'var(--text2)' : 'var(--text)',
+        textDecoration: 'none',
       },
     }
   })
 
-  return { pos, edges, cards }
+  return { pos, edges, cards, skeletons }
 }

@@ -1,7 +1,7 @@
 // Electron main process: the window, settings and secrets, and every call to a model backend.
 // Prompts and parsing live in the renderer (src/ai.ts); this file only moves text in and out,
 // so API keys never reach the page.
-const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, nativeTheme, safeStorage, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -320,8 +320,12 @@ handle('settings:set', (patch, secrets) => {
   for (const [name, value] of Object.entries(secrets ?? {})) if (value !== undefined) setSecret(name, value)
   if (settings.backend !== 'opencode') stopOpencode()
   saveSettings()
+  // The Settings window and the main window each hold a copy; keep them in step.
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('settings:changed', publicSettings())
   return publicSettings()
 })
+handle('settings:open', () => openSettings())
+handle('menu:state', (state) => { if (typeof state?.theme === 'string') { menuState.theme = state.theme; buildMenu() } })
 handle('models:list', (b) => listModels(b))
 handle('ai:complete', (prompt, schema) => complete(prompt, schema))
 handle('search:web', (query) => webSearch(query))
@@ -330,14 +334,17 @@ ipcMain.handle('local:download', async (e, id) => {
   try { return { ok: true, value: await downloadLocal(id, (p) => e.sender.send('local:progress', id, p)) } } catch (err) { return { ok: false, error: err.message ?? String(err) } }
 })
 
-// ---------- Window ----------
-function createWindow() {
+// ---------- Windows ----------
+let mainWin = null
+let settingsWin = null
+
+function makeWindow(opts, hash) {
   const win = new BrowserWindow({
-    width: 1440, height: 900, minWidth: 720, minHeight: 520,
-    backgroundColor: '#161618',
-    title: 'Rabbithole',
+    // Matches the system appearance so the window never flashes the wrong colour while loading.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#161618' : '#ffffff',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
+    ...opts,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   // Links open in the user's browser; the app window never navigates away.
@@ -346,16 +353,77 @@ function createWindow() {
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (e, url) => { if (url !== win.webContents.getURL()) e.preventDefault() })
-  if (process.env.VITE_DEV_SERVER_URL) win.loadURL(process.env.VITE_DEV_SERVER_URL)
-  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+  if (process.env.VITE_DEV_SERVER_URL) win.loadURL(process.env.VITE_DEV_SERVER_URL + (hash ? `#${hash}` : ''))
+  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), hash ? { hash } : {})
+  return win
+}
+function createWindow() {
+  mainWin = makeWindow({ width: 1440, height: 900, minWidth: 720, minHeight: 520, title: 'Rabbithole' })
+  mainWin.on('closed', () => { mainWin = null })
+}
+// Settings get their own small window, opened from the app menu or with Cmd/Ctrl+comma.
+function openSettings() {
+  if (settingsWin) { settingsWin.focus(); return }
+  settingsWin = makeWindow({
+    width: 560, height: 760, resizable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    title: 'Settings', parent: process.platform === 'darwin' ? undefined : mainWin ?? undefined,
+  }, 'settings')
+  settingsWin.on('closed', () => { settingsWin = null })
+}
+
+// ---------- Menu bar: every command in the app is here, with its shortcut ----------
+const menuState = { theme: 'obsidian' }
+// With no main window open (macOS), a menu command just opens one.
+const send = (cmd) => { if (mainWin) mainWin.webContents.send('menu', cmd); else createWindow() }
+function buildMenu() {
+  const mac = process.platform === 'darwin'
+  const settingsItem = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: openSettings }
+  const themes = [['obsidian', 'Obsidian'], ['warm', 'Claude Warm'], ['nothing', 'Nothing OS 5']]
+  const breadth = ['Focus', 'Balanced', 'Wide', 'Spread']
+  const template = [
+    ...(mac ? [{ label: app.name, submenu: [
+      { role: 'about' }, { type: 'separator' }, settingsItem, { type: 'separator' },
+      { role: 'services' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' },
+    ] }] : []),
+    { label: 'File', submenu: [
+      { label: 'New Topic', accelerator: 'CmdOrCtrl+N', click: () => send('new-topic') },
+      { type: 'separator' },
+      { label: 'Export Markdown…', accelerator: 'CmdOrCtrl+E', click: () => send('export-md') },
+      { label: 'Export Obsidian Vault…', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('export-vault') },
+      { type: 'separator' },
+      ...(mac ? [{ role: 'close' }] : [settingsItem, { type: 'separator' }, { role: 'quit' }]),
+    ] },
+    { role: 'editMenu' },
+    { label: 'Graph', submenu: [
+      // Space also goes deeper when focus is not in a text field; menus cannot claim Space without breaking typing.
+      { label: 'Go Deeper', accelerator: 'CmdOrCtrl+Down', click: () => send('deeper') },
+      { label: 'Go Up', accelerator: 'CmdOrCtrl+Up', click: () => send('up') },
+      { type: 'separator' },
+      { label: 'Re-roll Suggestions', accelerator: 'CmdOrCtrl+R', click: () => send('reroll') },
+      { label: 'Research Again', accelerator: 'CmdOrCtrl+Shift+R', click: () => send('research') },
+      { label: 'Dismiss Node', click: () => send('dismiss') },
+      { type: 'separator' },
+      { label: 'Breadth', submenu: breadth.map((label, i) => ({ label, accelerator: `CmdOrCtrl+${i + 1}`, click: () => send(`breadth:${i}`) })) },
+    ] },
+    { label: 'View', submenu: [
+      { label: 'Theme', submenu: themes.map(([id, label]) => ({ label, type: 'radio', checked: menuState.theme === id, click: () => send(`theme:${id}`) })) },
+      { type: 'separator' },
+      { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
+      ...(app.isPackaged ? [] : [{ type: 'separator' }, { role: 'toggleDevTools' }]),
+    ] },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: [{ label: 'Rabbithole on GitHub', click: () => shell.openExternal('https://github.com/codezeroexe/rabbithole') }] },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 if (!app.requestSingleInstanceLock()) app.quit()
-app.on('second-instance', () => { const w = BrowserWindow.getAllWindows()[0]; if (w) { if (w.isMinimized()) w.restore(); w.focus() } })
+app.on('second-instance', () => { if (!mainWin) return createWindow(); if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus() })
 app.whenReady().then(() => {
   loadSettings()
+  buildMenu()
   createWindow()
-  app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow() })
+  app.on('activate', () => { if (!mainWin) createWindow() })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', stopOpencode)
