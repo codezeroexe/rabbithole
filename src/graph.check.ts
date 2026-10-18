@@ -65,3 +65,10 @@ assert.equal(r.verified, true)
 assert.deepEqual(parseResearch('{"summary":"S","sources":[{"title":"a","url":"javascript:alert(1)"}]}', 'X', []).sources, [])
 
 console.log('graph checks passed')
+
+// Wikipedia lead links: reading order, first sentence (the "is a kind of" part) skipped, namespaces dropped.
+{
+  const { linksInParagraphs } = await import('./wiki.ts')
+  const html = '<p>A <a href="/wiki/Car">car</a> is a <a href="/wiki/Motor_vehicle">motor vehicle</a>. It was made by <a href="/wiki/Karl_Benz">Benz</a> and <a href="/wiki/File:X.jpg">x</a>.</p><p>See <a href="/wiki/Ford_Model_T#Hist">Model T</a>.</p>'
+  assert.deepEqual(linksInParagraphs(html), ['Karl Benz', 'Ford Model T'])
+}

@@ -1,5 +1,5 @@
-// Offline demo engine: canned car data plus generic fallbacks. Used when no model is picked
-// or when the OpenCode call fails.
+// Offline demo engine: canned car data only. Topics it does not know get no suggestions,
+// rather than generic filler like "X history".
 import type { ExpandContext, Research, Suggestion } from './graph.ts'
 
 type Entry = { summary?: string; facts?: [string, string][]; focus: string[]; spread: string[]; steer?: Record<string, string[]> }
@@ -37,17 +37,14 @@ const TEASE: Record<string, string> = {
 }
 
 const lc = (s: string) => s.toLowerCase()
-const entry = (label: string): Entry => LIB[lc(label)] ?? {
-  focus: [`${label} history`, `Key ${label} facts`, `People behind ${label}`, `${label} rivals`, `${label} today`],
-  spread: [`${label} in pop culture`, `${label} design`, `${label} economics`],
-}
+const entry = (label: string): Entry => LIB[lc(label)] ?? { focus: [], spread: [] }
 const tease = (label: string) => TEASE[lc(label)] ?? `Dive into ${label}.`
 
 export function mockSuggest(c: ExpandContext): Suggestion[] {
   const e = entry(c.label)
   const excl = new Set(c.avoid.map(lc))
   let focus: string[] = []
-  for (const s of c.steered) focus.push(...(e.steer?.[lc(s)] ?? [`${s} rivals`, `More like ${s}`]))
+  for (const s of c.steered) focus.push(...(e.steer?.[lc(s)] ?? []))
   focus = focus.concat(e.focus)
   const out: Suggestion[] = []
   const take = (list: string[], count: number, tangent: boolean) => {
@@ -69,7 +66,7 @@ export function mockResearch(path: string[]): Research {
   const label = path[path.length - 1]
   const e = LIB[lc(label)]
   return {
-    summary: e?.summary ?? `Offline demo: no research for ${label}. Pick a model in the header to research it for real.`,
+    summary: e?.summary ?? `Offline demo: no research for ${label}. Pick another backend in Settings to research it for real.`,
     facts: (e?.facts ?? []).map(([k, v]) => ({ k, v })),
     sources: [],
   }

@@ -23,7 +23,8 @@ Open **Settings** in the header and pick one:
 
 | Backend | Needs | Good for |
 |---|---|---|
-| Offline demo | nothing | trying the app (car topics only) |
+| Free: Wikipedia (default) | nothing | any topic, no key, no model: every card is a real Wikipedia article linked from its parent |
+| Offline demo | nothing | trying the app without internet (car topics only) |
 | Anthropic, OpenAI, Google Gemini | an API key | fast, high-quality suggestions |
 | OpenRouter | one API key | hundreds of models, some free |
 | Ollama, LM Studio | the app running locally | free, private, offline |
@@ -32,7 +33,9 @@ Open **Settings** in the header and pick one:
 
 OpenCode's own free models only work inside the OpenCode app, so pick a model from another provider there.
 
-**Web search (optional):** add a Tavily or Brave Search key, and each research note is based on 5 fetched results. Only those pages are listed as sources.
+**Web search:** Wikipedia search is on by default and needs no key: with a model backend, each research note is based on the top Wikipedia articles, and only those are listed as sources. Tavily or Brave Search (with a key) search the whole web instead.
+
+**Light local model:** Ollama with a small model (`ollama pull qwen2.5:0.5b` or `llama3.2:1b`) runs on most laptops. Model backends are grounded in the Wikipedia article for each node, so even small models stay on topic.
 
 API keys are encrypted with the system keychain (Electron `safeStorage`) and stored in the app's settings file. They never reach the page, and each is sent only to its own provider.
 

@@ -14,6 +14,7 @@ const TIMEOUT_MS = 300_000
 
 // Every backend the settings screen offers. OpenAI-compatible ones share one code path.
 const BACKENDS = {
+  free: { label: 'Free: Wikipedia (no key, no model)' },
   offline: { label: 'Offline demo' },
   anthropic: { label: 'Anthropic (Claude)', key: true, defaultModel: 'claude-opus-5-5' },
   openai: { label: 'OpenAI', key: true, baseUrl: 'https://api.openai.com/v1' },
@@ -24,11 +25,12 @@ const BACKENDS = {
   custom: { label: 'Custom OpenAI-compatible', key: 'optional', baseUrl: '', editableUrl: true },
   opencode: { label: 'OpenCode' },
 }
-const SEARCH = { none: 'No web search', tavily: 'Tavily', brave: 'Brave Search' }
+// wikipedia is searched from the renderer (public API, no key); the others need a key and run here.
+const SEARCH = { wikipedia: 'Wikipedia (free, no key)', none: 'No web search', tavily: 'Tavily', brave: 'Brave Search' }
 
 // ---------- Settings (secrets encrypted with the OS keychain via safeStorage) ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
-let settings = { backend: 'offline', models: {}, urls: {}, search: 'none', secrets: {} }
+let settings = { backend: 'free', models: {}, urls: {}, search: 'wikipedia', secrets: {} }
 
 function loadSettings() {
   try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) } } catch { /* first run */ }
@@ -213,7 +215,7 @@ async function opencodeModels() {
 // ---------- Web search add-on ----------
 async function webSearch(query) {
   const key = getSecret(settings.search)
-  if (settings.search === 'none') return []
+  if (settings.search === 'none' || settings.search === 'wikipedia') return []
   if (!key) throw new Error(`Add your ${SEARCH[settings.search]} API key in Settings.`)
   if (settings.search === 'tavily') {
     const d = await fetchJson('https://api.tavily.com/search', {

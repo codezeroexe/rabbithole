@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { bridge } from './ai.ts'
+import { wikiSearch } from './wiki.ts'
 import type { Settings } from './ai.ts'
 
 const HINTS: Record<string, string> = {
+  free: 'Suggestions and notes come straight from Wikipedia: real, on-topic articles, no key and no model. For a light local model instead, use Ollama with a small one such as qwen2.5:0.5b or llama3.2:1b.',
   offline: 'Canned demo data about cars. Nothing leaves this computer.',
   anthropic: 'Claude models. Get a key at console.anthropic.com.',
   openai: 'Get a key at platform.openai.com.',
@@ -40,7 +42,7 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
   const info = initial.backends.find((b) => b.id === backend)!
   // Load the model list whenever the backend changes and it can be reached without typing anything.
   useEffect(() => {
-    if (backend === 'offline' || (info.key === true && !initial.keysSet[backend])) return
+    if (backend === 'offline' || backend === 'free' || (info.key === true && !initial.keysSet[backend])) return
     loadModels()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend])
@@ -73,10 +75,11 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
   const test = () => run('Testing', async () => {
     await persist()
     if (search !== 'none') {
-      const r = await bridge!.search('rabbit hole')
+      const r = search === 'wikipedia' ? await wikiSearch('rabbit hole') : await bridge!.search('rabbit hole')
       if (!r.length) throw new Error('Web search worked but returned no results.')
     }
     if (backend === 'offline') return 'Offline demo is ready.'
+    if (backend === 'free') return (await wikiSearch('rabbit hole')).length ? 'Wikipedia is reachable.' : 'Wikipedia returned nothing.'
     const reply = await bridge!.complete('Reply with only this JSON: {"ok":true}')
     if (!reply.includes('ok')) throw new Error(`Unexpected reply: ${reply.slice(0, 120)}`)
     return `Connected. ${search !== 'none' ? 'Web search works too.' : ''}`
@@ -125,7 +128,7 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
 
         {info.key && keyField(backend, info.key === 'optional' ? 'API key (optional)' : 'API key')}
 
-        {backend !== 'offline' && (
+        {backend !== 'offline' && backend !== 'free' && (
           <div className="setting">
             <label htmlFor="model-name">Model</label>
             <div className="row">
@@ -157,10 +160,10 @@ export function SettingsDialog({ initial, onClose, onSaved }: { initial: Setting
           <p className="muted">
             {search === 'none'
               ? 'Research notes come from the model’s memory, and their sources are not checked.'
-              : 'Each research note is based on 5 search results, and only those pages are listed as sources.'}
+              : 'Each research note is based on the top search results, and only those pages are listed as sources.'}
           </p>
         </div>
-        {search !== 'none' && keyField(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
+        {search !== 'none' && search !== 'wikipedia' && keyField(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
 
         {!initial.encryption && <p className="error">This system has no secure key storage, so API keys cannot be saved.</p>}
         <p className="muted">Keys are encrypted with your system keychain and stay on this computer. They are sent only to the provider they belong to.</p>

@@ -9,6 +9,7 @@ import { bridge, listProxyModels, research, suggest } from './ai.ts'
 import type { ModelOption, Settings } from './ai.ts'
 import { SettingsDialog } from './Settings.tsx'
 import { mockResearch, mockSuggest } from './mock.ts'
+import { wikiHints, wikiResearch, wikiSuggest } from './wiki.ts'
 
 type Theme = 'dark' | 'warm' | 'nothing'
 const THEMES: { value: Theme; label: string }[] = [
@@ -17,6 +18,7 @@ const THEMES: { value: Theme; label: string }[] = [
   { value: 'nothing', label: 'Nothing OS 5' },
 ]
 const OFFLINE = 'offline'
+const FREE = 'free'
 
 // Browser storage is a per-viewer convenience only; every access is guarded.
 const load = <T,>(key: string, fallback: T): T => {
@@ -42,7 +44,7 @@ const X = () => (
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => load('rh.theme', 'dark'))
-  const [model, setModel] = useState<string>(() => load('rh.model', OFFLINE))
+  const [model, setModel] = useState<string>(() => load('rh.model', FREE))
   const [models, setModels] = useState<ModelOption[] | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -74,7 +76,8 @@ export default function App() {
     listProxyModels().then(setModels).catch((e) => setServerError(`OpenCode server not reachable (${e.message}). Run "npm run opencode" for real research; the offline demo still works.`))
   }, [])
   // Desktop app: the backend chosen in Settings. Browser: the model picked in the header.
-  const isOffline = () => (bridge ? (settingsRef.current?.backend ?? OFFLINE) === OFFLINE : modelRef.current === OFFLINE)
+  // 'free' and 'offline' need no model; anything else is a model backend.
+  const engine = () => (bridge ? settingsRef.current?.backend ?? FREE : modelRef.current === OFFLINE || modelRef.current === FREE ? modelRef.current : 'model')
 
   // All writes go through commit so async callbacks always build on the latest graph.
   const commit = useCallback((fn: (g: Graph) => void): Graph | null => {
@@ -91,17 +94,31 @@ export default function App() {
     const g = commit((g) => { clearGhosts(g, id); const n = find(g, id); if (n) n.loading = req })
     if (!g || !find(g, id)) return
     const ctx = contextFor(g, id)
-    let items: Suggestion[]
+    const kind = engine()
+    let items: Suggestion[] = []
+    let ref: string | undefined
     try {
-      items = isOffline() ? mockSuggest(ctx) : await suggest(modelRef.current, ctx)
+      if (kind === OFFLINE) items = mockSuggest(ctx)
+      else if (kind === FREE) ({ items, ref } = await wikiSuggest(ctx))
+      else {
+        // Ground the model in the real article so it stays on topic; carry on without it if Wikipedia is down.
+        const h = await wikiHints(ctx).catch(() => null)
+        if (h) { ref = h.ref; ctx.hints = h.hints }
+        items = await suggest(modelRef.current, ctx)
+      }
     } catch (e) {
-      setError(`Suggestions failed: ${(e as Error).message} Showing offline demo suggestions instead.`)
-      items = mockSuggest(ctx)
+      const msg = (e as Error).message
+      if (kind === FREE || kind === OFFLINE) setError(`Suggestions failed: ${msg}`)
+      else {
+        try { ({ items, ref } = await wikiSuggest(ctx)); setError(`Suggestions failed: ${msg} Showing Wikipedia suggestions instead.`) }
+        catch { setError(`Suggestions failed: ${msg}`) }
+      }
     }
     commit((g) => {
       const n = find(g, id)
       if (!n || n.loading !== req) return
       n.loading = undefined
+      if (ref && !n.ref) n.ref = ref
       addGhosts(g, id, items)
     })
   }, [commit])
@@ -111,9 +128,13 @@ export default function App() {
     const g = commit((g) => { const n = find(g, id); if (n) n.researching = req })
     if (!g || !find(g, id)) return
     const path = pathOf(g, id).map((n) => n.label)
+    const kind = engine()
     let r: Research | undefined
+    let ref: string | undefined
     try {
-      r = isOffline() ? mockResearch(path) : await research(modelRef.current, path, (settingsRef.current?.search ?? 'none') !== 'none')
+      if (kind === OFFLINE) r = mockResearch(path)
+      else if (kind === FREE) ({ research: r, ref } = await wikiResearch(path, find(g, id)!.ref))
+      else r = await research(modelRef.current, path, settingsRef.current?.search ?? 'wikipedia')
     } catch (e) {
       setError(`Research failed: ${(e as Error).message}`)
     }
@@ -121,6 +142,7 @@ export default function App() {
       const n = find(g, id)
       if (!n || n.researching !== req) return
       n.researching = undefined
+      if (ref && !n.ref) n.ref = ref
       if (r) n.research = r
     })
   }, [commit])
@@ -256,9 +278,10 @@ export default function App() {
           ) : <>
             <label className="sr-only" htmlFor="model">AI model</label>
             <select id="model" className="field" value={model} onChange={(e) => setModel(e.target.value)}>
+              <option value={FREE}>Free: Wikipedia</option>
               <option value={OFFLINE}>Offline demo</option>
               {models?.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-              {model !== OFFLINE && models && !models.some((m) => m.value === model) && <option value={model}>{model}</option>}
+              {model !== OFFLINE && model !== FREE && models && !models.some((m) => m.value === model) && <option value={model}>{model}</option>}
             </select>
           </>}
           <label className="sr-only" htmlFor="theme">Theme</label>

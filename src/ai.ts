@@ -2,6 +2,7 @@
 // holds the keys and talks to the chosen backend. In a plain browser (npm run dev without
 // Electron) it falls back to an OpenCode server behind the Vite proxy at /oc.
 import type { ExpandContext, Fact, Research, Source, Suggestion } from './graph.ts'
+import { wikiSearch } from './wiki.ts'
 
 export type BackendInfo = { id: string; label: string; key: boolean | 'optional'; editableUrl: boolean; defaultModel: string }
 export type Settings = {
@@ -79,6 +80,8 @@ export function suggestPrompt(c: ExpandContext): string {
     c.dismissed.length ? `The user rejected these, so avoid them and things like them: ${c.dismissed.join(', ')}.` : '',
     c.taste.length ? `Elsewhere in the graph the user steered toward: ${c.taste.join(', ')}.` : '',
     c.avoid.length ? `Already on the graph, do not repeat: ${c.avoid.join(', ')}.` : '',
+    c.hints?.length ? `Wikipedia's article on this links to: ${c.hints.join(', ')}. Prefer real, specific things like these.` : '',
+    `Every item must be a specific, named thing that belongs under "${c.label}" in this path: a real model, person, place, event, technique or sub-field. Never generic headings such as "History", "Key facts", "Rivals", "Today", "In pop culture", "Design" or "Economics".`,
     c.rolls ? 'The user asked for a fresh batch, so give different ideas from the obvious ones.' : '',
     `Give exactly ${c.focusCount + c.tangentCount} items: ${c.focusCount} that go deeper into "${c.label}" (tangent false)` +
       (c.tangentCount ? ` and ${c.tangentCount} lateral, surprising but related jumps (tangent true).` : '.'),
@@ -135,7 +138,9 @@ export function parseResearch(text: string, label: string, results: SearchResult
   return { summary: str(d.summary) || `No summary came back for ${label}.`, facts, sources, verified: results.length > 0 }
 }
 
-export async function research(model: string, path: string[], useSearch: boolean): Promise<Research> {
-  const results = useSearch && bridge ? await bridge.search(path.slice(-3).join(' ')) : []
+// search: 'none', 'wikipedia' (free, no key) or a keyed provider the main process calls.
+export async function research(model: string, path: string[], search: string): Promise<Research> {
+  const q = path.slice(-3).join(' ')
+  const results = search === 'wikipedia' ? await wikiSearch(q).catch(() => []) : search !== 'none' && bridge ? await bridge.search(q) : []
   return parseResearch(await complete(model, researchPrompt(path, results)), path[path.length - 1], results)
 }

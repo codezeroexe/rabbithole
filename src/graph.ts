@@ -3,7 +3,8 @@
 export type Status = 'solid' | 'ghost' | 'dismissed'
 export type Fact = { k: string; v: string }
 export type Source = { title: string; url: string }
-export type Suggestion = { label: string; teaser: string; tangent: boolean }
+// ref: the exact Wikipedia title a suggestion came from, when it came from Wikipedia.
+export type Suggestion = { label: string; teaser: string; tangent: boolean; ref?: string }
 // verified: sources came from a real web search rather than the model's memory.
 export type Research = { summary: string; facts: Fact[]; sources: Source[]; verified?: boolean }
 
@@ -16,6 +17,7 @@ export type GraphNode = {
   steered: boolean
   rolls: number
   teaser?: string
+  ref?: string // Wikipedia title this node is about, once known
   research?: Research
   loading?: number // request id while suggestions are in flight
   researching?: number // request id while research is in flight
@@ -57,13 +59,16 @@ export const modeFor = (spread: number) => ['Focus', 'Balanced', 'Wide', 'Spread
 export type ExpandContext = {
   path: string[]
   label: string
+  ref?: string
   steered: string[]
+  steeredRefs: string[]
   dismissed: string[]
   taste: string[]
   avoid: string[]
   focusCount: number
   tangentCount: number
   rolls: number
+  hints?: string[] // on-topic article titles a model can draw from
 }
 
 // Everything the AI needs to expand one node: where it sits, what the user liked and rejected.
@@ -74,7 +79,9 @@ export function contextFor(g: Graph, pid: string): ExpandContext {
   return {
     path: pathOf(g, pid).map((n) => n.label),
     label: p.label,
+    ref: p.ref,
     steered: kids.filter((n) => n.steered).map((n) => n.label),
+    steeredRefs: kids.filter((n) => n.steered).map((n) => n.ref ?? n.label),
     dismissed: kids.filter((n) => n.status === 'dismissed').map((n) => n.label),
     taste: g.nodes.filter((n) => n.steered && n.parent !== pid).map((n) => n.label),
     avoid: g.nodes.filter((n) => !(n.parent === pid && n.status === 'ghost')).map((n) => n.label).slice(-80),
@@ -94,7 +101,7 @@ export function addGhosts(g: Graph, pid: string, items: Suggestion[]) {
     const label = s.label.trim()
     if (!label || taken.has(lc(label))) continue
     taken.add(lc(label))
-    g.nodes.push({ id: nid(), label, parent: pid, status: 'ghost', tangent: !!s.tangent, steered: false, rolls: 0, teaser: s.teaser })
+    g.nodes.push({ id: nid(), label, parent: pid, status: 'ghost', tangent: !!s.tangent, steered: false, rolls: 0, teaser: s.teaser, ref: s.ref })
   }
 }
 
