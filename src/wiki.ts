@@ -301,17 +301,35 @@ export async function wikiAspectResearch(label: string, facet: Facet): Promise<R
 }
 
 
+// The article's lead picture at ~640 px, from the REST summary. Never fails research: no picture is fine.
+async function leadImage(title: string): Promise<string | undefined> {
+  try {
+    const r = await wikimedia(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`, HEADERS)
+    if (!r.ok) return undefined
+    const d = rec(await r.json())
+    const thumb = String(rec(d.thumbnail).source ?? '')
+    // Thumbnails are /NNNpx-name; ask for 640 instead of the summary's 320.
+    if (/\/\d+px-[^/]+$/.test(thumb)) return thumb.replace(/\/\d+px-([^/]+)$/, '/640px-$1')
+    const full = String(rec(d.originalimage).source ?? '')
+    return /^https:\/\//.test(full) ? full : /^https:\/\//.test(thumb) ? thumb : undefined
+  } catch { return undefined }
+}
+
 // Research reads the node's article, found with the path and steer the same way suggestions are.
 export async function wikiResearch(c: ExpandContext): Promise<{ ref: string; research: Research }> {
   const label = c.label
   const title = await resolve(c)
-  const d = await api({ action: 'query', prop: 'extracts|description', exintro: '1', explaintext: '1', exsentences: '4', redirects: '1', titles: title })
+  const [d, image] = await Promise.all([
+    api({ action: 'query', prop: 'extracts|description', exintro: '1', explaintext: '1', exsentences: '4', redirects: '1', titles: title }),
+    leadImage(title),
+  ])
   const p = rec(arr(rec(d.query).pages)[0])
   // Drop the pronunciation stubs the plain-text extract leaves behind: "Ferrari S.p.A. (; Italian: ...)".
   const summary = String(p.extract ?? '').replace(/\s*\(\s*;[^)]*\)/g, '').replace(/\s+/g, ' ').trim()
   return {
     ref: String(p.title ?? title),
     research: {
+      ...(image && { image }),
       summary: summary || `Wikipedia has no summary for ${label}.`,
       facts: p.description ? [{ k: 'In short', v: teaser(String(p.description)) }] : [],
       sources: [{ title: `Wikipedia: ${p.title ?? title}`, url: pageUrl(String(p.title ?? title)) }],

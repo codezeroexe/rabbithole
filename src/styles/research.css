@@ -1,1 +1,6 @@
 /* research: see docs/personalize-plan.md */
+.topic-img { display: block; width: 100%; max-height: 180px; object-fit: cover; border-radius: var(--card-radius); margin-bottom: 12px; opacity: 0; transition: opacity .3s; }
+.topic-img.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .topic-img { transition: none; } }
+.segmented.level { margin: 4px 0 12px; }
+.segmented.level button { flex: 1; }

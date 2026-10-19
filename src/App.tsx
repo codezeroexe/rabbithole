@@ -13,7 +13,7 @@ import { THEMES, nativeTheme } from './Settings.tsx'
 import type { Theme } from './Settings.tsx'
 import { wikiAspectResearch, wikiHints, wikiResearch, wikiSuggest } from './wiki.ts'
 import { Reader } from './Reader.tsx'
-import { applyGlass, BREADTH, MOD, prefs, SHORTCUTS } from './prefs.ts'
+import { applyGlass, BREADTH, MOD, prefs, setPrefs, SHORTCUTS } from './prefs.ts'
 import { forgetCache } from './net.ts'
 import { applyCustom } from './custom.ts'
 import { chime } from './sound.ts'
@@ -44,6 +44,14 @@ function cited(s: string, sources: Source[]) {
     const src = /^\[\d+\]$/.test(p) ? sources[+p.slice(1, -1) - 1] : undefined
     return src ? <sup key={i}><a href={src.url} target="_blank" rel="noreferrer" title={src.title}>{p.slice(1, -1)}</a></sup> : p
   })
+}
+
+// True when the page is on a domain the reader blocked (or a subdomain of it).
+function blocked(url: string) {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '')
+    return prefs().blocked.some((d) => { d = d.toLowerCase().trim().replace(/^www\./, ''); return !!d && (host === d || host.endsWith(`.${d}`)) })
+  } catch { return false }
 }
 
 function download(name: string, text: string) {
@@ -125,6 +133,7 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [composing, setComposing] = useState(false)
   const [tab, setTab] = useState<'notes' | 'read'>('notes')
+  const [level, setLevel] = useState(prefs().readingLevel)
   const [exportMode, setExportMode] = useState<'md' | 'vault' | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
@@ -147,6 +156,7 @@ export default function App() {
   useEffect(() => { applyGlass(); applyCustom() }, [])
   // Bumped when Settings changes a pref, so anything that reads prefs() while rendering redraws.
   const [prefsTick, setPrefsTick] = useState(0)
+  useEffect(() => setLevel(prefs().readingLevel), [prefsTick])
   const requestRef = useRef<(type: string) => void>(() => {})
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -317,9 +327,9 @@ export default function App() {
         const [w, web] = await Promise.all([
           ctx.offWiki ? Promise.resolve(null) : wikiResearch(ctx).catch(() => null),
           // The web search reads the node with what narrows it: its steer and the articles above.
-          search === 'web' ? searchFor([ctx.label, ctx.steer, ...ctx.anchors.slice(0, 2).map((a) => a.label)].filter(Boolean).join(' '), 'web').catch(() => []) : Promise.resolve([]),
+          search === 'web' && prefs().web ? searchFor([ctx.label, ctx.steer, ...ctx.anchors.slice(0, 2).map((a) => a.label)].filter(Boolean).join(' '), 'web').catch(() => []) : Promise.resolve([]),
         ])
-        const others = web.filter((x) => !x.url.includes('wikipedia.org')).slice(0, 5)
+        const others = web.filter((x) => !x.url.includes('wikipedia.org') && !blocked(x.url)).slice(0, 5)
         const shown = others.map((x) => ({ ...x, snippet: x.snippet.slice(0, 280) }))
         if (w) {
           ref = w.ref
@@ -333,7 +343,8 @@ export default function App() {
       // Latest news on the node as the path reads it, when the free web search is on.
       if (r && bridge && kind !== OFFLINE && prefs().news && (settingsRef.current?.search ?? 'web') === 'web' && ctx.kind !== 'aspect') {
         const news = await bridge.news([ctx.label, ctx.steer, ctx.anchors[0]?.label].filter(Boolean).join(' ')).catch(() => [])
-        if (news.length) r = { ...r, news: news.slice(0, 6) }
+        const shown = news.filter((x) => !blocked(x.url))
+        if (shown.length) r = { ...r, news: shown.slice(0, 6) }
       }
     } catch (e) {
       setError(`Research failed: ${(e as Error).message}`)
@@ -876,20 +887,31 @@ export default function App() {
             )}
 
             {tab === 'read' && a.ref ? <Reader title={a.ref} onBranch={branch} onGraph={onGraph} /> : (<>
+            {a.research?.image && <img className="topic-img" src={a.research.image} alt="" loading="lazy" onLoad={(e) => e.currentTarget.classList.add('on')} onError={(e) => e.currentTarget.remove()} />}
             <form className="steer" onSubmit={steer}>
               <label className="sr-only" htmlFor="steer">Narrow this node with your own words</label>
               <input id="steer" ref={steerRef} className="field" placeholder={a.steer ? 'Narrow it differently' : `Narrow ${a.label}: a kind, an era, a place`} value={steerText} onChange={(e) => setSteerText(e.target.value)} />
               <button type="submit" className="btn" disabled={!steerText.trim()}>Steer</button>
             </form>
 
+            <div className="segmented level" role="radiogroup" aria-label="Reading level">
+              {(['quick', 'standard', 'deep'] as const).map((l) => (
+                <button key={l} type="button" role="radio" aria-checked={level === l} onClick={() => { setPrefs({ readingLevel: l }); setLevel(l) }}>{l[0].toUpperCase() + l.slice(1)}</button>
+              ))}
+            </div>
             <section>
               <h2>Summary</h2>
-              {a.researching && !a.research ? <p className="muted pulse">Researching {a.label}…</p> : <p>{a.research ? cited(a.research.summary, a.research.sources) : a.teaser ?? 'No research yet.'}</p>}
+              {a.researching && !a.research ? <p className="muted pulse">Researching {a.label}…</p> : <p>{a.research ? cited(level === 'quick' ? a.research.summary.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : a.research.summary, a.research.sources) : a.teaser ?? 'No research yet.'}</p>}
             </section>
-            {!!a.research?.facts.length && (
+            <section>
+              <label className="h2" htmlFor="notes">Your notes</label>
+              <textarea id="notes" className="field" rows={3} placeholder="Write your own notes on this node." value={graph.notes[a.id] ?? ''}
+                onChange={(e) => { const v = e.target.value; commit((g) => { g.notes[a.id] = v }) }} />
+            </section>
+            {level !== 'quick' && !!a.research?.facts.length && (
               <section>
                 <h2>Key facts</h2>
-                <dl className="facts">{a.research.facts.map((f) => <div key={f.k}><dt>{f.k}</dt><dd>{f.v}</dd></div>)}</dl>
+                <dl className="facts">{a.research.facts.slice(0, level === 'deep' ? undefined : 6).map((f) => <div key={f.k}><dt>{f.k}</dt><dd>{f.v}</dd></div>)}</dl>
               </section>
             )}
             <section>
@@ -908,11 +930,11 @@ export default function App() {
                 ))}
               </ul>
             </section>
-            {!!a.research?.web?.length && (
+            {level !== 'quick' && !!a.research?.web?.length && (
               <section>
                 <h2>From the web</h2>
                 <ul className="list web">
-                  {a.research.web.map((w) => (
+                  {a.research.web.slice(0, level === 'deep' ? undefined : 3).map((w) => (
                     <li key={w.url}>
                       <a href={w.url} target="_blank" rel="noreferrer noopener">{w.title}</a>
                       <span className="host">{new URL(w.url).hostname.replace(/^www\./, '')}</span>
@@ -922,11 +944,11 @@ export default function App() {
                 </ul>
               </section>
             )}
-            {!!a.research?.news?.length && (
+            {level !== 'quick' && !!a.research?.news?.length && (
               <section>
                 <h2>Latest news</h2>
                 <ul className="list news">
-                  {a.research.news.map((n) => (
+                  {a.research.news.slice(0, level === 'deep' ? undefined : 3).map((n) => (
                     <li key={n.url}>
                       <a href={n.url} target="_blank" rel="noreferrer noopener">{n.title}</a>
                       <span className="host">{[n.source, Number.isFinite(Date.parse(n.date)) && ago(Date.parse(n.date))].filter(Boolean).join(' · ')}</span>
@@ -935,17 +957,12 @@ export default function App() {
                 </ul>
               </section>
             )}
-            {!!a.research?.sources.length && (
+            {level !== 'quick' && !!a.research?.sources.length && (
               <section>
                 <h2>Sources</h2>
                 <ul className="list">{a.research.sources.map((s) => <li key={s.url}><a href={s.url} target="_blank" rel="noreferrer noopener">{s.title || s.url}</a></li>)}</ul>
               </section>
             )}
-            <section>
-              <label className="h2" htmlFor="notes">Your notes</label>
-              <textarea id="notes" className="field" rows={3} placeholder="Write your own notes on this node." value={graph.notes[a.id] ?? ''}
-                onChange={(e) => { const v = e.target.value; commit((g) => { g.notes[a.id] = v }) }} />
-            </section>
             <div className="quiet-actions">
               <button type="button" className="link-btn" onClick={() => doResearch(a.id)} disabled={!!a.researching}>Research again</button>
               <button type="button" className="link-btn" onClick={() => dismiss(a.id)} disabled={!a.parent}>Dismiss node</button>
