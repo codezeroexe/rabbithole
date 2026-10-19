@@ -1,1 +1,23 @@
-/* custom: see docs/personalize-plan.md */
+/* Density: nudges the existing sizing; regular changes nothing. */
+:root[data-density='compact'] body { font-size: 13px; }
+:root[data-density='roomy'] body { font-size: 15px; }
+/* --item-h is set per theme on <html>, so the sidebar rows adjust their own height instead. */
+:root[data-density='compact'] .nav-item { min-height: calc(var(--item-h) - 4px); }
+:root[data-density='roomy'] .nav-item { min-height: calc(var(--item-h) + 4px); }
+:root[data-density='compact'] .panel { gap: 12px; padding: 16px 16px 22px; padding-top: calc(72px - var(--insp-mt)); }
+:root[data-density='roomy'] .panel { gap: 24px; padding: 24px 24px 34px; padding-top: calc(72px - var(--insp-mt)); }
+
+/* Settings: Make it yours */
+.accent-picker { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.accent-picker .swatch-btn { width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 50%; }
+.accent-picker .swatch-btn[aria-pressed='true'] { outline: 2px solid var(--text); outline-offset: 2px; }
+.accent-picker input[type='color'] { width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 50%; background: none; }
+.accent-picker .btn[aria-pressed='true'] { outline: 2px solid var(--text); outline-offset: 2px; }
+.srow-ctl:has(.accent-picker) { max-width: 70%; }
+
+/* Settings: blocked sites and interests */
+.block-form { display: flex; align-items: center; gap: 8px; padding: 9px 14px; }
+.block-form .field { flex: 1 1 auto; min-width: 0; }
+.block-form .field[aria-invalid='true'] { border-color: var(--error); }
+.block-form .error { margin: 0; font-size: 12px; }
+.srow-empty { margin: 0; padding: 14px; font-size: 13px; color: var(--text2); }

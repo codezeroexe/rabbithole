@@ -7,6 +7,7 @@ import type { Graph } from './graph.ts'
 import { applyM3, DEFAULT_SEED, hslHex, hueSat, m3Vars, SEEDS } from './m3.ts'
 import { forgetCache } from './net.ts'
 import { applyCustom } from './custom.ts'
+import { interests } from './interests.ts'
 import { applyGlass, BREADTH, prefs, request, setPrefs, SHORTCUTS } from './prefs.ts'
 import type { Prefs } from './prefs.ts'
 import { Mark } from './App.tsx'
@@ -25,6 +26,7 @@ export const THEMES: { value: Theme; label: string }[] = [
   { value: 'nothing', label: 'Nothing OS 5' },
   { value: 'm3', label: 'Material 3 Expressive' },
 ]
+const ACCENTS = ['#0A84FF', '#30B0C7', '#34C759', '#FF9F0A', '#FF375F', '#BF5AF2', '#8E8E93', '#C96442']
 const loadSeed = () => { try { return JSON.parse(localStorage.getItem('rh.seed') ?? 'null') ?? DEFAULT_SEED } catch { return DEFAULT_SEED } }
 
 const HINTS: Record<string, string> = {
@@ -54,10 +56,11 @@ function groupModels(ids: string[]): [string, string[]][] {
 
 // ---------- Window ----------
 // One toolbar of panes, as Mac settings windows have; on Windows the same panes sit in a left rail.
-type Pane = 'general' | 'appearance' | 'research' | 'data' | 'about'
+type Pane = 'general' | 'interests' | 'appearance' | 'research' | 'data' | 'about'
 const ic = (d: string) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
 const PANES: { id: Pane; label: string; icon: ReactNode }[] = [
   { id: 'general', label: 'General', icon: ic('M4 7h10M18 7h2M4 17h2M10 17h10M14 4.5v5M6 14.5v5M16 7a2 2 0 1 0 0 .01M8 17a2 2 0 1 0 0 .01') },
+  { id: 'interests', label: 'Interests', icon: ic('M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z') },
   { id: 'appearance', label: 'Appearance', icon: ic('M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.8-.6-1.3-.6-2.1 0-.9.7-1.6 1.6-1.6H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3zM7.5 11.5h.01M10 7.5h.01M15 7.5h.01') },
   { id: 'research', label: 'Research', icon: ic('M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4M11 8v6M8 11h6') },
   { id: 'data', label: 'Data', icon: ic('M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3') },
@@ -113,7 +116,9 @@ export function SettingsWindow() {
       </header>
       <main id="settings-pane" className="settings-body" role="tabpanel" aria-labelledby={`tab-${pane}`}>
         {pane === 'general' && <General />}
+        {pane === 'interests' && <Interests />}
         {pane === 'appearance' && <Appearance theme={theme} setTheme={setTheme} seed={seed} setSeed={setSeed} settings={initial} onSaved={setInitial} />}
+        {pane === 'research' && <Sources />}
         {pane === 'research' && (error ? <p className="error" role="alert">{error}</p>
           : initial ? <Research initial={initial} onSaved={setInitial} />
           : <p className="muted">{bridge ? 'Loading…' : 'Choosing a backend needs the desktop app.'}</p>)}
@@ -164,7 +169,24 @@ function General() {
         <Row label="Add recent news to notes" hint="Headlines about the topic, from the free web search." htmlFor="news"><Switch id="news" on={p.news} set={(v) => set({ news: v })} /></Row>
         <Row label="Load the next level ahead of time" hint="With Wikipedia as the backend, Go deeper is then usually instant." htmlFor="prefetch"><Switch id="prefetch" on={p.prefetch} set={(v) => set({ prefetch: v })} /></Row>
       </Group>
+      <Group>
+        <Row label="Sounds" hint="Play a soft sound when you go deeper or open a node." htmlFor="sounds"><Switch id="sounds" on={p.sounds} set={(v) => set({ sounds: v })} /></Row>
+      </Group>
+      {bridge?.platform === 'darwin' && (
+        <Group foot="Shown while Rabbithole is open. macOS keeps the standard icon in Finder.">
+          <Row label="Dock icon follows the theme" htmlFor="dock-icon"><Switch id="dock-icon" on={p.dockIcon} set={(v) => set({ dockIcon: v })} /></Row>
+        </Group>
+      )}
     </>
+  )
+}
+
+// A row of exclusive choices, as the Appearance control.
+function Seg<T extends string>({ label, value, options, onPick }: { label: string; value: T; options: readonly (readonly [T, string])[]; onPick: (v: T) => void }) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={label}>
+      {options.map(([v, text]) => <button key={v} type="button" role="radio" aria-checked={value === v} onClick={() => onPick(v)}>{text}</button>)}
+    </div>
   )
 }
 
@@ -172,6 +194,9 @@ function General() {
 function Appearance({ theme, setTheme, seed, setSeed, settings, onSaved }: { theme: Theme; setTheme: (t: Theme) => void; seed: string; setSeed: (s: string) => void; settings: Settings | null; onSaved: (s: Settings) => void }) {
   const dark = matchMedia('(prefers-color-scheme: dark)').matches
   const [glass, setGlass] = useState(() => prefs().glass)
+  const [p, setP] = useState<Prefs>(prefs)
+  // Accent, font, density and layout apply at once, here and in the main window.
+  const pick = (patch: Partial<Prefs>) => { setP(setPrefs(patch)); applyCustom() }
   const pickGlass = (v: number) => { setGlass(v); setPrefs({ glass: v }); applyGlass() }
   // Light and Dark pin the appearance for this app only; the main process applies it to every window.
   const pickAppearance = (a: 'system' | 'light' | 'dark') => { bridge?.setSettings({ appearance: a }).then(onSaved).catch(() => {}) }
@@ -212,6 +237,25 @@ function Appearance({ theme, setTheme, seed, setSeed, settings, onSaved }: { the
             </button>
           ))}
         </div>
+      </Group>
+      <Group title="Make it yours" foot="Works with every theme. Theme default keeps the theme's own look.">
+        <Row label="Accent">
+          <div className="accent-picker" role="group" aria-label="Accent">
+            <button type="button" className="btn" aria-pressed={p.accent === null} onClick={() => pick({ accent: null })}>Theme default</button>
+            {ACCENTS.map((hex) => <button key={hex} type="button" className="swatch-btn" aria-label={hex} title={hex} aria-pressed={p.accent?.toLowerCase() === hex.toLowerCase()} style={{ background: hex }} onClick={() => pick({ accent: hex })} />)}
+            <label className="sr-only" htmlFor="accent-custom">Any color</label>
+            <input id="accent-custom" type="color" value={p.accent ?? '#0a84ff'} onChange={(e) => pick({ accent: e.target.value })} title="Any color" />
+          </div>
+        </Row>
+        <Row label="Font">
+          <Seg label="Font" value={p.font} onPick={(font) => pick({ font })} options={[['theme', 'Theme'], ['system', 'System'], ['serif', 'Serif'], ['mono', 'Mono'], ['rounded', 'Rounded']]} />
+        </Row>
+        <Row label="Density">
+          <Seg label="Density" value={p.density} onPick={(density) => pick({ density })} options={[['compact', 'Compact'], ['regular', 'Regular'], ['roomy', 'Roomy']]} />
+        </Row>
+        <Row label="Graph layout">
+          <Seg label="Graph layout" value={p.layout} onPick={(layout) => pick({ layout })} options={[['tree', 'Tree'], ['down', 'Top-down'], ['radial', 'Radial']]} />
+        </Row>
       </Group>
       {theme === 'glass' && (
         <Group title="Liquid Glass" foot="Clear shows more of what is behind the sidebar and inspector; Tinted makes them more opaque and easier to read. On macOS 27 the window material also follows the slider in System Settings › Appearance.">
@@ -398,9 +442,81 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
   )
 }
 
+// ---------- Sources ----------
+// "https://www.example.com/page" becomes "example.com"; anything without a dot is not a site.
+function siteOf(input: string): string | null {
+  const raw = input.trim()
+  if (!raw || /\s/.test(raw)) return null
+  try {
+    const host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.replace(/^www\./, '').toLowerCase()
+    return host.includes('.') && !host.startsWith('.') && !host.endsWith('.') ? host : null
+  } catch { return null }
+}
+
+function Sources() {
+  const [p, setP] = useState<Prefs>(prefs)
+  const [site, setSite] = useState('')
+  const [bad, setBad] = useState(false)
+  const set = (patch: Partial<Prefs>) => setP(setPrefs(patch))
+  const block = (e: FormEvent) => {
+    e.preventDefault()
+    const host = siteOf(site)
+    if (!host) return setBad(true)
+    if (!p.blocked.includes(host)) set({ blocked: [...p.blocked, host] })
+    setSite('')
+    setBad(false)
+  }
+  return (
+    <>
+      <Group title="Notes" foot="Quick shows a short summary. Deep shows every fact, link and headline.">
+        <Row label="Reading level">
+          <Seg label="Reading level" value={p.readingLevel} onPick={(readingLevel) => set({ readingLevel })} options={[['quick', 'Quick'], ['standard', 'Standard'], ['deep', 'Deep']]} />
+        </Row>
+        <Row label="Pages from the open web" htmlFor="web"><Switch id="web" on={p.web} set={(v) => set({ web: v })} /></Row>
+      </Group>
+      <Group title="Blocked sites">
+        <form className="block-form" onSubmit={block}>
+          <label className="sr-only" htmlFor="block-site">Site to block</label>
+          <input id="block-site" className="field" value={site} placeholder="example.com" autoComplete="off" aria-invalid={bad} aria-describedby={bad ? 'block-err' : undefined}
+            onChange={(e) => { setSite(e.target.value); setBad(false) }} />
+          {bad && <p id="block-err" className="error" role="alert">Enter a site like example.com</p>}
+          <button type="submit" className="btn">Block</button>
+        </form>
+        {p.blocked.length ? p.blocked.map((b) => (
+          <Row key={b} label={b}><button type="button" className="btn" onClick={() => set({ blocked: p.blocked.filter((x) => x !== b) })}>Remove</button></Row>
+        )) : <p className="srow-empty">No blocked sites. Pages from blocked sites never appear in your notes.</p>}
+      </Group>
+    </>
+  )
+}
+
+// ---------- Interests ----------
+function Interests() {
+  const [p, setP] = useState<Prefs>(prefs)
+  const dives = readDives()
+  // interests() leaves muted topics out, so add them back from the dives to let them be turned on again.
+  const on = interests(dives.map((d) => d.graph), 50)
+  const labels = new Map<string, string>()
+  for (const d of dives) for (const n of d.graph?.nodes ?? []) if (n.status === 'solid') labels.set(n.label.toLowerCase(), n.label)
+  const off = p.muted.filter((k) => labels.has(k)).map((k) => labels.get(k)!)
+  const list = [...on.map((i) => i.label), ...off]
+  const toggle = (label: string, shown: boolean) => {
+    const key = label.toLowerCase()
+    setP(setPrefs({ muted: shown ? p.muted.filter((m) => m !== key) : [...new Set([...p.muted, key])] }))
+  }
+  return (
+    <Group foot="Rabbithole suggests new dives from the topics you open most. Turn a topic off to stop seeing it on Home.">
+      {list.length ? list.map((label, i) => {
+        const shown = !p.muted.includes(label.toLowerCase())
+        return <Row key={label} label={label} htmlFor={`interest-${i}`}><Switch id={`interest-${i}`} on={shown} set={(v) => toggle(label, v)} /></Row>
+      }) : <p className="srow-empty">Open a few dives and your topics show up here.</p>}
+    </Group>
+  )
+}
+
 // ---------- Data ----------
 type Dive = { id: string; updated: number; graph: Graph }
-const readDives = (): Dive[] => { try { return JSON.parse(localStorage.getItem('rh.dives') ?? '[]') } catch { return [] } }
+const readDives = (): Dive[] => { try { const d = JSON.parse(localStorage.getItem('rh.dives') ?? '[]'); return Array.isArray(d) ? d : [] } catch { return [] } }
 const isDive = (d: unknown): d is Dive => !!d && typeof d === 'object' && typeof (d as Dive).id === 'string' && Array.isArray((d as Dive).graph?.nodes) && (d as Dive).graph.nodes.length > 0
 const mb = (bytes: number) => bytes < 1e6 ? `${Math.max(1, Math.round(bytes / 1e3))} KB` : `${(bytes / 1e6).toFixed(1)} MB`
 
