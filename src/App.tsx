@@ -138,7 +138,6 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [composing, setComposing] = useState(false)
   const [tab, setTab] = useState<'notes' | 'read'>('notes')
-  const [level, setLevel] = useState(prefs().readingLevel)
   const [exportMode, setExportMode] = useState<'md' | 'vault' | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
@@ -165,8 +164,7 @@ export default function App() {
   useEffect(() => { applyM3(theme, seed); applyCustom(); applyDockIcon() }, [theme, seed])
   useEffect(() => { applyGlass(); applyCustom() }, [])
   // Bumped when Settings changes a pref, so anything that reads prefs() while rendering redraws.
-  const [prefsTick, setPrefsTick] = useState(0)
-  useEffect(() => setLevel(prefs().readingLevel), [prefsTick])
+  const [, setPrefsTick] = useState(0)
   const requestRef = useRef<(type: string) => void>(() => {})
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -633,8 +631,9 @@ export default function App() {
     }
   }
 
-  // Read each render (prefsTick redraws on a Settings change) so the memo sees the layout pref change.
-  const layout = prefsTick < 0 ? 'tree' : prefs().layout
+  // Prefs are read while rendering; setPrefsTick re-renders when Settings (or the reading-level control) changes them.
+  const layout = prefs().layout
+  const level = prefs().readingLevel
   const view = useMemo(() => (graph ? buildView(graph, unfolded, layout) : null), [graph, unfolded, layout])
 
   // Camera: world point P sits at origin + pan + zoom * (P - active). Origin is the .camera anchor (34%, 46%).
@@ -983,7 +982,7 @@ export default function App() {
 
             <div className="segmented level" role="radiogroup" aria-label="Reading level">
               {(['quick', 'standard', 'deep'] as const).map((l) => (
-                <button key={l} type="button" role="radio" aria-checked={level === l} onClick={() => { setPrefs({ readingLevel: l }); setLevel(l) }}>{l[0].toUpperCase() + l.slice(1)}</button>
+                <button key={l} type="button" role="radio" aria-checked={level === l} onClick={() => { setPrefs({ readingLevel: l }); setPrefsTick((t) => t + 1) }}>{l[0].toUpperCase() + l.slice(1)}</button>
               ))}
             </div>
             <section>
