@@ -1,6 +1,6 @@
 // Run with `npm run check`. Fails loudly if the graph logic or reply parsing breaks.
 import assert from 'node:assert/strict'
-import { addGhosts, mergeGhosts, stripCites, contextFor, dismissNode, exportVault, kidsOf, newGraph, norm, relayout, steerNode } from './graph.ts'
+import { addGhosts, mergeGhosts, stripCites, contextFor, dismissNode, exportVault, kidsOf, newGraph, norm, relayout, shapeLayout, steerNode } from './graph.ts'
 import { extractJson, parseResearch, parseSuggestions } from './ai.ts'
 import { mockSuggest } from './mock.ts'
 
@@ -207,4 +207,26 @@ console.log('graph checks passed')
   assert.deepEqual(merged[0].members, ['A', 'B', 'C', 'D'])
   assert.equal(aspectName('product or material produced', ['products', 'produces']), 'Products')
   assert.equal(aspectName('founded by', ['founder']), 'Founded by')
+}
+
+// Shapes: tree is untouched, down runs depth downward, radial rings the seed; no cards land on each other.
+{
+  const lay = newGraph('Cars')
+  const mk = (label: string) => ({ label, teaser: '', tangent: false })
+  addGhosts(lay, 'root', Array.from({ length: 6 }, (_, i) => mk(`A${i}`)))
+  for (const k of kidsOf(lay, 'root').slice(0, 3)) addGhosts(lay, k.id, Array.from({ length: 5 }, (_, i) => mk(`${k.label}-${i}`)))
+  kidsOf(lay, 'root')[5].loading = true // skeleton slots must be shaped too
+  const base = relayout(lay).pos
+  assert.ok(Object.keys(base).some((k) => k.includes('~sk')))
+  assert.equal(shapeLayout(base, 'tree'), base)
+  const down = shapeLayout(base, 'down'), rad = shapeLayout(base, 'radial')
+  assert.ok(down.root.y < down[kidsOf(lay, 'root')[0].id].y)
+  assert.deepEqual(rad.root, { x: 0, y: 0 })
+  const radii = kidsOf(lay, 'root').map((n) => Math.hypot(rad[n.id].x, rad[n.id].y))
+  assert.ok(radii[0] > 0 && radii.every((r) => Math.abs(r - radii[0]) < 1e-6))
+  for (const [name, p] of [['down', down], ['radial', rad]] as const) {
+    assert.deepEqual(Object.keys(p).sort(), Object.keys(base).sort(), name)
+    const all = Object.values(p)
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) assert.ok(Math.hypot(all[i].x - all[j].x, all[i].y - all[j].y) >= 120, `${name} overlap`)
+  }
 }
