@@ -26,19 +26,13 @@ Open **Settings** in the header and pick one:
 | Free: Wikipedia (default) | nothing | any topic, no key, no model: every card is a real Wikipedia article linked from its parent |
 | Built-in tiny model | a one-time download (400 MB, or 1.1 GB for the better model) | a real model running inside the app: no LM Studio, Ollama or key |
 | Offline demo | nothing | trying the app without internet (car topics only) |
-| Anthropic, OpenAI, Google Gemini | an API key | fast, high-quality suggestions |
-| OpenRouter | one API key | hundreds of models, some free |
 | Ollama, LM Studio | the app running locally | free, private, offline |
-| Custom OpenAI-compatible | a server URL (and a key if it needs one) | self-hosted or other providers |
-| OpenCode | OpenCode installed | reusing the providers set up in OpenCode; the app starts and stops OpenCode itself |
 
-OpenCode's own free models only work inside the OpenCode app, so pick a model from another provider there.
+Every backend is free: no API key and no account. Paid providers (Anthropic, OpenAI, Gemini, OpenRouter, OpenCode, custom servers) were removed; a saved choice of one falls back to Wikipedia, and any keys stored by older versions are deleted on first launch.
 
-**Web search:** Wikipedia search is on by default and needs no key: with a model backend, each research note is based on the top Wikipedia articles, and only those are listed as sources. Tavily or Brave Search (with a key) search the whole web instead.
+**Web search:** keyless by default: Bing and DuckDuckGo results with the top pages read, plus Google News headlines. "Wikipedia only" and "No web search" are the other choices. With search on, each research note is based on the results, and only those are listed as sources.
 
 **Light local model:** Ollama with a small model (`ollama pull qwen2.5:0.5b` or `llama3.2:1b`) runs on most laptops. Model backends are grounded in the Wikipedia article for each node, so even small models stay on topic.
-
-API keys are encrypted with the system keychain (Electron `safeStorage`) and stored in the app's settings file. They never reach the page, and each is sent only to its own provider.
 
 ## Develop
 
@@ -49,7 +43,7 @@ npm install
 npm run app
 ```
 
-`npm run app` builds the page and opens the desktop app. To get hot reload, run `npm run dev` in one terminal and `npm run app:dev` in another. Run `npm run dev` alone for the plain browser version: it reaches OpenCode through the Vite proxy (`npm run opencode` starts that server).
+`npm run app` builds the page and opens the desktop app. To get hot reload, run `npm run dev` in one terminal and `npm run app:dev` in another. Run `npm run dev` alone for the plain browser version: it has the Wikipedia engine and the offline demo; model backends need the desktop app.
 
 Build installers locally:
 
@@ -83,8 +77,8 @@ Runs `src/graph.check.ts`: graph logic, steering and dismissal context, column l
 
 - `src/graph.ts`: graph state and pure helpers (layout, context for the model, exports).
 - `src/ai.ts`: prompts and reply parsing; sends text through the desktop bridge.
-- `src/Settings.tsx`: the backend, model, key and web search settings.
-- `electron/main.cjs`: the window, encrypted settings, and every call to a backend or search API.
+- `src/Settings.tsx`: the backend, model and web search settings.
+- `electron/main.cjs`: the window, settings, and every call to a backend or search API.
 - `electron/preload.cjs`: the narrow bridge (`window.rh`) between the page and the main process.
 - `src/mock.ts`: offline demo data.
 - `src/App.tsx`, `src/index.css`: the UI and the three themes.
@@ -95,7 +89,7 @@ The Nothing OS 5 theme uses NType82 and NDot 55 from `public/fonts/`. They are N
 
 ## Known limits
 
-- Speed depends on the backend: GLM 5.3 Flash on NVIDIA through OpenCode took 80–100 s per call in testing. Hosted APIs answer in seconds.
+- Speed depends on the backend: the built-in Qwen3 0.6B took about 1.3 s per reply on an M4 in testing; Ollama and LM Studio depend on the model and the computer.
 - Sources come from the model's memory, not a web search, and the app labels them as unchecked.
 - Card heights in the layout are estimates. Long text is clamped, so cards should not overlap, but very long labels can.
 - Builds are unsigned (see Install). Signing needs an Apple Developer ID and a Windows code-signing certificate.
