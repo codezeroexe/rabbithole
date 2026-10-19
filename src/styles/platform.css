@@ -1,1 +1,17 @@
-/* platform: see docs/personalize-plan.md */
+/* Per-dive icon or color in the sidebar, and the popover that sets it. */
+.dive-row { position: relative; }
+.dive-mark { flex: 0 0 18px; width: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; }
+.dive-mark + .item-text { margin-left: -4px; }
+.dive-dot { width: 8px; height: 8px; border-radius: 50%; }
+.dive-more { position: absolute; right: 4px; top: 50%; translate: 0 -50%; width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: none; border-radius: var(--item-r); background: transparent; color: var(--text2); font-size: 15px; line-height: 1; opacity: 0; }
+.dive-row:hover .dive-more, .dive-row:focus-within .dive-more, .dive-more[aria-expanded='true'] { opacity: 1; }
+.dive-more:hover { background: var(--seg-bg); color: var(--text); }
+.dive-pop { position: absolute; z-index: 20; left: 8px; right: 8px; top: calc(100% + 2px); display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--card-radius); background: var(--surface); box-shadow: var(--halo); }
+.dive-icons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; }
+.dive-icons button { height: 30px; padding: 0; border: none; border-radius: var(--item-r); background: transparent; font-size: 16px; }
+.dive-icons button:hover { background: var(--seg-bg); }
+.dive-icons button.on { background: var(--seg-bg); box-shadow: inset 0 0 0 1.5px var(--active); }
+.dive-colors { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+.dive-colors button { aspect-ratio: 1; padding: 0; border: 2px solid transparent; border-radius: 50%; }
+.dive-colors button.on { border-color: var(--surface); box-shadow: 0 0 0 1.5px var(--text); }
+.dive-clear { align-self: flex-end; padding: 2px 10px; border: none; border-radius: var(--item-r); background: var(--seg-bg); color: var(--text); font-size: 12px; }

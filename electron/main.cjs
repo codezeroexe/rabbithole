@@ -1,7 +1,7 @@
 // Electron main process: the window, settings and secrets, and every call to a model backend.
 // Prompts and parsing live in the renderer (src/ai.ts); this file only moves text in and out,
 // so API keys never reach the page.
-const { app, BrowserWindow, Menu, ipcMain, nativeTheme, safeStorage, shell } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme, safeStorage, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -424,6 +424,13 @@ handle('search:news', (query) => memoized(`news|${query}`, 900_000, () => newsSe
 handle('local:list', () => localModels())
 ipcMain.handle('local:download', async (e, id) => {
   try { return { ok: true, value: await downloadLocal(id, (p) => e.sender.send('local:progress', id, p)) } } catch (err) { return { ok: false, error: err.message ?? String(err) } }
+})
+
+// The Dock icon follows the theme while the app runs; null goes back to the bundled icon.
+handle('dock:icon', (url) => {
+  if (url !== null && !(typeof url === 'string' && url.startsWith('data:image/png;base64,') && url.length < 8 * 1024 * 1024)) throw new Error('Invalid icon')
+  if (process.platform !== 'darwin' || !app.dock) return
+  app.dock.setIcon(url === null ? path.join(__dirname, '..', 'build', 'icon.png') : nativeImage.createFromDataURL(url))
 })
 
 // ---------- Windows ----------
