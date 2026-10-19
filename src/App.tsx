@@ -17,6 +17,7 @@ import { applyGlass, BREADTH, MOD, prefs, SHORTCUTS } from './prefs.ts'
 import { forgetCache } from './net.ts'
 import { applyCustom } from './custom.ts'
 import { chime } from './sound.ts'
+import { Examples, Starred, Stats, Threads, Today } from './HomeExtras.tsx'
 import { applyM3, BURST, CLOVER, DEFAULT_SEED } from './m3.ts'
 
 // Four steps, one per number of tangents (0 to 3) among the 4 suggestions.
@@ -357,10 +358,7 @@ export default function App() {
     if (!n.research && !n.researching) doResearch(id)
   }, [commit, expand, doResearch])
 
-  const startTopic = (e: FormEvent) => {
-    e.preventDefault()
-    const seed = seedText.trim()
-    if (!seed) return
+  const startDive = (seed: string) => {
     const g = { ...newGraph(seed), spread: prefs().breadth, updated: Date.now() }
     morph(() => {
       past.current = []; future.current = []; prefetched.current.clear(); setUnfolded(new Set())
@@ -374,6 +372,7 @@ export default function App() {
       select('root')
     })
   }
+  const startTopic = (e: FormEvent) => { e.preventDefault(); if (seedText.trim()) startDive(seedText.trim()) }
 
   const steer = (e: FormEvent) => {
     e.preventDefault()
@@ -765,10 +764,11 @@ export default function App() {
                   <input id="seed" className="field" autoFocus={composing || !last} placeholder="A topic, a person, a song…" value={seedText} onChange={(e) => setSeedText(e.target.value)} />
                   <button type="submit" className="btn btn-go" disabled={!seedText.trim()}>Start a dive</button>
                 </form>
+                <Examples i={3} onStart={startDive} typing={!!seedText} />
                 {(bridge ? settings?.backend === OFFLINE : model === OFFLINE) && <p className="muted">Offline demo has car data only. {bridge ? 'Open Settings to pick a backend' : 'Pick a model in the sidebar'} for any topic.</p>}
                 {serverError && <p className="error">{serverError}</p>}
                 {last && (
-                  <button type="button" className="resume m-in" style={{ '--i': 3 } as CSSProperties} onClick={() => openDive(last.id)}>
+                  <button type="button" className="resume m-in" style={{ '--i': 4 } as CSSProperties} onClick={() => openDive(last.id)}>
                     <svg className="resume-mark" width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path className="resume-shape" /><path d="M19 15l14 9-14 9z" fill="var(--active)" /></svg>
                     <span className="resume-text">
                       <span className="label">Continue where you left off</span>
@@ -778,6 +778,9 @@ export default function App() {
                     <Arrow />
                   </button>
                 )}
+                <Today i={5} dives={allDives} onStart={startDive} onOpen={openDive} />
+                <Starred i={6} dives={allDives} onOpen={openDive} />
+                <Threads i={7} dives={allDives} onStart={startDive} />
                 {allDives.length >= 2 && (
                   <div className="search-field">
                     <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.8" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M10.6 10.6L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
@@ -786,7 +789,7 @@ export default function App() {
                 )}
                 {query.trim() && rows.length === 0 && <p className="label">Nothing in your dives matches "{query}".</p>}
                 {rows.length > 0 && (
-                  <section className="toc m-in" style={{ '--i': 4 } as CSSProperties} aria-labelledby="dives-title">
+                  <section className="toc m-in" style={{ '--i': 8 } as CSSProperties} aria-labelledby="dives-title">
                     <h2 id="dives-title" className="label">{q ? 'Matches' : 'Earlier dives'}</h2>
                     <ul>
                       {rows.map(({ d, ns }) => (
@@ -809,6 +812,7 @@ export default function App() {
                     </ul>
                   </section>
                 )}
+                <Stats i={9} dives={allDives} />
               </div>
             </div>
           ) : (

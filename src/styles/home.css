@@ -1,1 +1,25 @@
-/* home: see docs/personalize-plan.md */
+/* Home extras: examples, today's rabbit hole, starred, threads, stats. See docs/personalize-plan.md. */
+.try { font-size: 13px; margin-top: -10px !important; }
+.try-seed { padding: 2px 0; animation: try-in var(--dur-3) var(--ease-out) both; }
+@keyframes try-in { from { opacity: 0; translate: 0 6px; } }
+
+/* Today reuses .resume; it has no leading mark, so the action line carries the accent. */
+.today { cursor: pointer; }
+.today .today-hook { font-size: 13.5px; color: var(--text2); }
+.today .today-go { margin-top: 6px; font-size: 13px; font-weight: 600; color: var(--active); }
+.today:hover .today-go { text-decoration: underline; text-underline-offset: 3px; }
+
+.starred h2, .threads h2 { margin: 0 0 4px; }
+.starred ul { margin: 0; padding: 0; list-style: none; }
+.starred li { border-top: var(--row-sep); }
+.starred li:first-child { border-top: none; }
+.starred-row { width: 100%; display: flex; align-items: baseline; gap: 12px; padding: 9px 0; border: none; background: none; text-align: left; color: var(--text); }
+.starred-label { flex: 0 0 auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; }
+.starred-row:hover .starred-label { text-decoration: underline; text-decoration-color: var(--active); text-underline-offset: 4px; }
+.starred-trail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.chip { min-height: 30px; padding: 0 12px; font-size: 13px; color: var(--text2); }
+.chip:hover { color: var(--text); }
+
+.stats { font-size: 12px; }
