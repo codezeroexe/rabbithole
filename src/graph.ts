@@ -19,7 +19,7 @@ export type Facet = { src: 'wd' | 'section'; key: string; of: string }
 // verified: sources came from a real web search rather than the model's memory.
 // web: what the web search found, shown under the summary (title, page, snippet).
 // news: recent headlines about the node read in its path, newest first.
-export type Research = { summary: string; facts: Fact[]; sources: Source[]; verified?: boolean; web?: { title: string; url: string; snippet: string }[]; news?: { title: string; url: string; source: string; date: string }[] }
+export type Research = { image?: string; summary: string; facts: Fact[]; sources: Source[]; verified?: boolean; web?: { title: string; url: string; snippet: string }[]; news?: { title: string; url: string; source: string; date: string }[] }
 
 export type GraphNode = {
   id: string
@@ -40,6 +40,7 @@ export type GraphNode = {
   research?: Research
   loading?: number // request id while suggestions are in flight
   researching?: number // request id while research is in flight
+  starred?: boolean // the user marked it to come back to
 }
 
 export type Graph = {
@@ -48,6 +49,7 @@ export type Graph = {
   spread: number
   notes: Record<string, string>
   updated?: number // last change, for the list of dives
+  visits?: { id: string; t: number }[] // every node opened, in the order the user opened them, for trail replay
 }
 
 let seq = 0

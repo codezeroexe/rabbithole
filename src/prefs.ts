@@ -7,9 +7,22 @@ export type Prefs = {
   news: boolean // add recent headlines to research notes
   prefetch: boolean // load the next level ahead of time (free engine only)
   glass: number // Liquid Glass from clear (0) to tinted (1), as macOS 27's slider
+  readingLevel: 'quick' | 'standard' | 'deep' // how much of a node's notes to show
+  web: boolean // add pages from the open web to research notes
+  blocked: string[] // domains never shown or cited ("example.com")
+  muted: string[] // interest topics the user turned off (lowercase labels)
+  accent: string | null // overrides the theme's accent color; null keeps the theme's
+  font: 'theme' | 'system' | 'serif' | 'mono' | 'rounded' // reading and display font; 'theme' keeps the theme's
+  density: 'compact' | 'regular' | 'roomy'
+  layout: 'tree' | 'down' | 'radial' // how the graph is drawn
+  sounds: boolean // soft sounds on Go deeper and opening a node
+  dockIcon: boolean // the Dock icon follows the theme (macOS)
 }
 export const BREADTH = [{ label: 'Focus', spread: 20 }, { label: 'Balanced', spread: 50 }, { label: 'Wide', spread: 75 }, { label: 'Spread', spread: 100 }]
-const DEFAULTS: Prefs = { openLast: true, breadth: 20, news: true, prefetch: true, glass: 0.5 }
+const DEFAULTS: Prefs = {
+  openLast: true, breadth: 20, news: true, prefetch: true, glass: 0.5, readingLevel: 'standard', web: true, blocked: [], muted: [],
+  accent: null, font: 'theme', density: 'regular', layout: 'tree', sounds: false, dockIcon: false,
+}
 
 export function prefs(): Prefs {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('rh.prefs') ?? '{}') } } catch { return DEFAULTS }

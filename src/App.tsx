@@ -15,6 +15,8 @@ import { wikiAspectResearch, wikiHints, wikiResearch, wikiSuggest } from './wiki
 import { Reader } from './Reader.tsx'
 import { applyGlass, BREADTH, MOD, prefs, SHORTCUTS } from './prefs.ts'
 import { forgetCache } from './net.ts'
+import { applyCustom } from './custom.ts'
+import { chime } from './sound.ts'
 import { applyM3, BURST, CLOVER, DEFAULT_SEED } from './m3.ts'
 
 // Four steps, one per number of tangents (0 to 3) among the 4 suggestions.
@@ -27,13 +29,13 @@ const load = <T,>(key: string, fallback: T): T => {
 }
 const save = (key: string, value: unknown) => { try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* storage unavailable */ } }
 
-type Dive = { id: string; updated: number; graph: Graph }
+type Dive = { id: string; updated: number; graph: Graph; icon?: string; color?: string }
 // Fade whichever side of the breadcrumb strip has more crumbs scrolled out of view.
 const fadeCrumbs = (el: HTMLElement) => {
   el.style.setProperty('--fade-l', el.scrollLeft > 1 ? '20px' : '0px')
   el.style.setProperty('--fade-r', el.scrollLeft + el.clientWidth < el.scrollWidth - 1 ? '20px' : '0px')
 }
-const clone = (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n) => ({ ...n })), notes: { ...g.notes } })
+const clone = (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n) => ({ ...n })), notes: { ...g.notes }, visits: g.visits && [...g.visits] })
 let reqSeq = 1
 
 // Summary with [k] markers as superscript links to sources[k - 1]; plain text passes through.
@@ -141,13 +143,15 @@ export default function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; save('rh.theme', theme); bridge?.setMenuState({ theme }).catch(() => {}) }, [theme])
   // Material 3: the seed color from Settings drives every color role; Settings saves it, this window follows.
   const [seed, setSeed] = useState(() => load('rh.seed', DEFAULT_SEED))
-  useEffect(() => applyM3(theme, seed), [theme, seed])
-  useEffect(applyGlass, [])
+  useEffect(() => { applyM3(theme, seed); applyCustom() }, [theme, seed])
+  useEffect(() => { applyGlass(); applyCustom() }, [])
+  // Bumped when Settings changes a pref, so anything that reads prefs() while rendering redraws.
+  const [prefsTick, setPrefsTick] = useState(0)
   const requestRef = useRef<(type: string) => void>(() => {})
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'rh.seed' && e.newValue) setSeed(JSON.parse(e.newValue))
-      if (e.key === 'rh.prefs') applyGlass()
+      if (e.key === 'rh.prefs') { applyGlass(); applyCustom(); setPrefsTick((t) => t + 1) }
       // The Settings window changed the saved dives or emptied the cache.
       if (e.key === 'rh.request' && e.newValue) requestRef.current(JSON.parse(e.newValue).type)
     }

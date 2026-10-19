@@ -6,6 +6,7 @@ import type { LocalModel, Settings } from './ai.ts'
 import type { Graph } from './graph.ts'
 import { applyM3, DEFAULT_SEED, hslHex, hueSat, m3Vars, SEEDS } from './m3.ts'
 import { forgetCache } from './net.ts'
+import { applyCustom } from './custom.ts'
 import { applyGlass, BREADTH, prefs, request, setPrefs, SHORTCUTS } from './prefs.ts'
 import type { Prefs } from './prefs.ts'
 import { Mark } from './App.tsx'
@@ -79,7 +80,7 @@ export function SettingsWindow() {
     document.documentElement.dataset.platform = bridge?.platform ?? 'web'
     bridge?.getSettings().then(setInitial).catch((e) => setError((e as Error).message))
   }, [])
-  useEffect(() => { document.documentElement.dataset.theme = theme; applyM3(theme, seed); applyGlass() }, [theme, seed])
+  useEffect(() => { document.documentElement.dataset.theme = theme; applyM3(theme, seed); applyGlass(); applyCustom() }, [theme, seed])
   const label = PANES.find((p) => p.id === pane)!.label
   // The title names the visible pane.
   useEffect(() => {
