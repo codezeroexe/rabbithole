@@ -18,6 +18,8 @@ const store = () => db ??= new Promise((ok) => {
     q.onerror = q.onblocked = () => ok(null)
     q.onsuccess = () => {
       const d = q.result
+      // Settings is deleting the cache: let go so the delete can finish.
+      d.onversionchange = () => { d.close(); db = undefined }
       try {
         const c = d.transaction('http', 'readwrite').objectStore('http').openCursor()
         c.onsuccess = () => {
@@ -31,6 +33,14 @@ const store = () => db ??= new Promise((ok) => {
     }
   } catch { ok(null) }
 })
+// Forget everything cached in this window; with deleteDb, also remove the stored copy.
+export function forgetCache(deleteDb = false): Promise<void> {
+  mem.clear()
+  void db?.then((d) => d?.close())
+  db = undefined
+  if (!deleteDb) return Promise.resolve()
+  return new Promise((ok) => { try { const q = indexedDB.deleteDatabase('rh-cache'); q.onsuccess = q.onerror = q.onblocked = () => ok() } catch { ok() } })
+}
 async function recall(url: string): Promise<Hit | undefined> {
   const m = mem.get(url)
   if (m) return m

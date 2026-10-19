@@ -463,8 +463,10 @@ function createWindow() {
 function openSettings() {
   if (settingsWin) { settingsWin.focus(); return }
   settingsWin = makeWindow({
-    width: 560, height: 760, resizable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    width: 680, height: 640, resizable: false, minimizable: false, maximizable: false, fullscreenable: false,
     title: 'Settings', parent: process.platform === 'darwin' ? undefined : mainWin ?? undefined,
+    // Mac: the pane toolbar shares the title bar, as in system settings windows.
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 12 } } : {}),
   }, 'settings')
   settingsWin.on('closed', () => { settingsWin = null })
 }

@@ -13,10 +13,11 @@ import { THEMES, nativeTheme } from './Settings.tsx'
 import type { Theme } from './Settings.tsx'
 import { wikiAspectResearch, wikiHints, wikiResearch, wikiSuggest } from './wiki.ts'
 import { Reader } from './Reader.tsx'
+import { BREADTH, MOD, prefs, SHORTCUTS } from './prefs.ts'
+import { forgetCache } from './net.ts'
 import { applyM3, BURST, CLOVER, DEFAULT_SEED } from './m3.ts'
 
 // Four steps, one per number of tangents (0 to 3) among the 4 suggestions.
-const BREADTH = [{ label: 'Focus', spread: 20 }, { label: 'Balanced', spread: 50 }, { label: 'Wide', spread: 75 }, { label: 'Spread', spread: 100 }]
 const OFFLINE = 'offline'
 const FREE = 'free'
 
@@ -61,13 +62,14 @@ const Gear = () => (
   </svg>
 )
 // The furthest path someone went in a dive, for the home screen: "Minecraft › YouTube › Dream".
-const Mark = () => (
+export const Mark = () => (
   <svg className="mark" viewBox="0 0 120 120" aria-hidden="true">
     <circle className="ring r1" cx="60" cy="60" r="54" /><circle className="ring r2" cx="65" cy="63" r="33" /><circle className="ring r3" cx="70" cy="66" r="15" />
     <circle className="dot" cx="70" cy="66" r="9" />
   </svg>
 )
 const Arrow = () => <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+const stopsOf = (g: Graph) => { const n = g.nodes.filter((x) => x.status === 'solid').length; return `${n} ${n === 1 ? 'stop' : 'stops'}` }
 const ago = (t: number) => {
   const s = (t - Date.now()) / 1000
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
@@ -108,7 +110,7 @@ export default function App() {
     const old = load<Graph | null>('rh.graph', null)
     return old ? [{ id: 'd1', updated: Date.now(), graph: old }] : []
   })
-  const [diveId, setDiveId] = useState<string | null>(() => load<string | null>('rh.dive', null) ?? (load<Graph | null>('rh.graph', null) ? 'd1' : null))
+  const [diveId, setDiveId] = useState<string | null>(() => !prefs().openLast ? null : load<string | null>('rh.dive', null) ?? (load<Graph | null>('rh.graph', null) ? 'd1' : null))
   const [graph, setGraph] = useState<Graph | null>(() => dives.find((d) => d.id === diveId)?.graph ?? null)
   const [error, setError] = useState<string | null>(null)
   const [steerText, setSteerText] = useState('')
@@ -134,8 +136,13 @@ export default function App() {
   // Material 3: the seed color from Settings drives every color role; Settings saves it, this window follows.
   const [seed, setSeed] = useState(() => load('rh.seed', DEFAULT_SEED))
   useEffect(() => applyM3(theme, seed), [theme, seed])
+  const requestRef = useRef<(type: string) => void>(() => {})
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => { if (e.key === 'rh.seed' && e.newValue) setSeed(JSON.parse(e.newValue)) }
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'rh.seed' && e.newValue) setSeed(JSON.parse(e.newValue))
+      // The Settings window changed the saved dives or emptied the cache.
+      if (e.key === 'rh.request' && e.newValue) requestRef.current(JSON.parse(e.newValue).type)
+    }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }, [])
@@ -238,7 +245,7 @@ export default function App() {
   const prefetch = useCallback((id: string) => {
     const g = ref.current
     const n = g && find(g, id)
-    if (!g || !n || engine() !== FREE || inflight.current >= 2) return
+    if (!g || !n || engine() !== FREE || !prefs().prefetch || inflight.current >= 2) return
     const key = `${id}:${g.spread}:${n.rolls}`
     if (prefetched.current.has(key)) return
     inflight.current++
@@ -312,7 +319,7 @@ export default function App() {
       }
       else r = await research(modelRef.current, path, settingsRef.current?.search ?? 'wikipedia')
       // Latest news on the node as the path reads it, when the free web search is on.
-      if (r && bridge && kind !== OFFLINE && (settingsRef.current?.search ?? 'web') === 'web' && ctx.kind !== 'aspect') {
+      if (r && bridge && kind !== OFFLINE && prefs().news && (settingsRef.current?.search ?? 'web') === 'web' && ctx.kind !== 'aspect') {
         const news = await bridge.news([ctx.label, ctx.steer, ctx.anchors[0]?.label].filter(Boolean).join(' ')).catch(() => [])
         if (news.length) r = { ...r, news: news.slice(0, 6) }
       }
@@ -342,7 +349,7 @@ export default function App() {
     e.preventDefault()
     const seed = seedText.trim()
     if (!seed) return
-    const g = { ...newGraph(seed), updated: Date.now() }
+    const g = { ...newGraph(seed), spread: prefs().breadth, updated: Date.now() }
     morph(() => {
       past.current = []; future.current = []; prefetched.current.clear(); setUnfolded(new Set())
       ref.current = g
@@ -428,6 +435,19 @@ export default function App() {
     const d = allDives.find((x) => x.id === id)
     if (d && confirm(`Delete the dive "${d.graph.nodes[0].label}"? This cannot be undone.`)) setDives(allDives.filter((x) => x.id !== id))
   }
+  // Requests from the Settings window (see prefs.ts), set each render; the storage listener calls it.
+  useEffect(() => {
+    requestRef.current = (type: string) => {
+      if (type === 'cache-cleared') return forgetCache()
+      if (type !== 'reload') return
+      const saved = load<Dive[]>('rh.dives', [])
+      // The dive on screen was deleted there: leave it for Home without saving it back.
+      if (diveId && !saved.some((d) => d.id === diveId)) { ref.current = null; setGraph(null); setDiveId(null); past.current = []; future.current = [] }
+      setDives(saved)
+    }
+  })
+  // The window title names the dive, for the Window menu and app switchers.
+  useEffect(() => { document.title = graph ? `${graph.nodes[0].label} – Rabbithole` : 'Rabbithole' }, [graph])
   // Commands from the native menu bar (desktop app only). Kept in a ref so the listener is set once.
   // Text fields keep their own undo; true when the focused element took it.
   const textFieldUndo = (cmd: string) => document.activeElement?.matches('input, textarea, [contenteditable]') ? document.execCommand(cmd) || true : false
@@ -628,7 +648,6 @@ export default function App() {
     ? allDives.map((d) => ({ d, ns: d.graph.nodes.filter((n) => hitsOf(n, d.graph)) })).filter((r) => r.ns.length > 0)
     : earlier.map((d) => ({ d, ns: [] }))
   const recent = [...allDives].sort((x, y) => y.updated - x.updated).slice(0, 12)
-  const stops = allDives.reduce((t, d) => t + d.graph.nodes.filter((n) => n.status === 'solid').length, 0)
 
   return (
     <div className="app">
@@ -643,8 +662,11 @@ export default function App() {
           {recent.map((d) => (
             <li key={d.id}>
               <button type="button" className={`nav-item${d.id === diveId ? ' on' : ''}`} aria-current={d.id === diveId ? 'page' : undefined} onClick={() => openDive(d.id)}>
-                <span className="dot" aria-hidden="true" /><span className="grow ellipsis">{d.graph.nodes[0].label}</span>
-                <span className="count">{d.graph.nodes.filter((n) => n.status === 'solid').length}</span>
+                <span className="grow item-text">
+                  <span className="ellipsis">{d.graph.nodes[0].label}</span>
+                  {/* Same seed twice reads the same; where each one got to tells them apart. */}
+                  <span className="sub ellipsis">{d.graph.active !== d.graph.nodes[0].id && `${find(d.graph, d.graph.active)?.label} · `}{ago(d.updated)}</span>
+                </span>
               </button>
             </li>
           ))}
@@ -687,7 +709,7 @@ export default function App() {
           <div className="spacer" />
           {graph && a && (
             <div className="toolbar" role="toolbar" aria-label="Dive actions">
-              <button type="button" className="btn" onClick={reroll} disabled={!!a.loading}>Re-roll</button>
+              <button type="button" className="btn" onClick={reroll} disabled={!!a.loading} title={`New suggestions (${MOD}R)`}>Re-roll</button>
               <button type="button" className="btn" onClick={fit} title="Fit the path on screen (F)">Fit</button>
               <div className="segmented" role="group" aria-label="Breadth of suggestions">
                 {BREADTH.map((b, i) => (
@@ -695,7 +717,7 @@ export default function App() {
                     title={`${4 - i} deeper, ${i} tangent${i === 1 ? '' : 's'}`} onClick={() => setSpread(b.spread)}>{b.label}</button>
                 ))}
               </div>
-              <button type="button" className="btn btn-go" onClick={deeper}>Go deeper <kbd>Space</kbd></button>
+              <button type="button" className="btn btn-go" onClick={deeper} title="Open the best suggestion (Space)">Go deeper</button>
             </div>
           )}
         </header>
@@ -713,7 +735,6 @@ export default function App() {
             <div className="home">
               <div className="home-col">
                 <div className="brandmark m-in" style={{ '--i': 0 } as CSSProperties}><Mark /><span className="wordmark">Rabbithole</span></div>
-                {allDives.length > 0 && <p className="label m-in" style={{ '--i': 1 } as CSSProperties}>{allDives.length} {allDives.length === 1 ? 'dive' : 'dives'} · {stops} stops</p>}
                 <h1 className="question m-in" style={{ '--i': 1 } as CSSProperties}>What are you curious about?</h1>
                 <form className="ask m-in" style={{ '--i': 2 } as CSSProperties} onSubmit={startTopic}>
                   <label className="sr-only" htmlFor="seed">Topic</label>
@@ -728,13 +749,16 @@ export default function App() {
                     <span className="resume-text">
                       <span className="label">Continue where you left off</span>
                       <b>{find(last.graph, last.graph.active)?.label ?? last.graph.nodes[0].label}</b>
-                      <span className="trail">{pathOf(last.graph, last.graph.active).map((n) => n.label).join(' › ')} · {last.graph.nodes.filter((n) => n.status === 'solid').length} stops · {ago(last.updated)}</span>
+                      <span className="trail">{pathOf(last.graph, last.graph.active).map((n) => n.label).join(' › ')} · {stopsOf(last.graph)} · {ago(last.updated)}</span>
                     </span>
                     <Arrow />
                   </button>
                 )}
                 {allDives.length >= 2 && (
-                  <input type="search" className="field toc-search" placeholder="Search your dives" aria-label="Search your dives" value={query} onChange={(e) => setQuery(e.target.value)} />
+                  <div className="search-field">
+                    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.8" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M10.6 10.6L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+                    <input type="search" className="field toc-search" placeholder="Search your dives" aria-label="Search your dives" value={query} onChange={(e) => setQuery(e.target.value)} />
+                  </div>
                 )}
                 {query.trim() && rows.length === 0 && <p className="label">Nothing in your dives matches "{query}".</p>}
                 {rows.length > 0 && (
@@ -747,7 +771,7 @@ export default function App() {
                             <button type="button" className="toc-row" onClick={() => openDive(d.id)} title={deepestTrail(d.graph)}>
                               <span className="toc-title">{d.graph.nodes[0].label}</span>
                               <span className="leader" aria-hidden="true" />
-                              <span className="toc-meta">{d.graph.nodes.filter((n) => n.status === 'solid').length} stops · {ago(d.updated)}</span>
+                              <span className="toc-meta">{stopsOf(d.graph)} · {ago(d.updated)}</span>
                             </button>
                             <button type="button" className="icon-btn del" aria-label={`Delete dive ${d.graph.nodes[0].label}`} title="Delete dive" onClick={() => deleteDive(d.id)}><X /></button>
                           </li>
@@ -819,7 +843,13 @@ export default function App() {
                 <button type="button" role="tab" aria-selected={tab === 'read'} aria-pressed={tab === 'read'} onClick={() => setTab('read')}>Read</button>
               </div>
             )}
-            {error && <p className="error" role="alert">{error} <button type="button" className="btn" onClick={() => setError(null)}>Dismiss</button></p>}
+            {error && (
+              <div className="banner" role="alert">
+                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M8 4.5v4.2M8 11.2v.3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+                <span className="grow">{error}</span>
+                <button type="button" className="icon-btn" aria-label="Dismiss this message" onClick={() => setError(null)}><X /></button>
+              </div>
+            )}
 
             {tab === 'read' && a.ref ? <Reader title={a.ref} onBranch={branch} onGraph={onGraph} /> : (<>
             <form className="steer" onSubmit={steer}>
@@ -938,7 +968,7 @@ export default function App() {
           <button type="button" className="btn" onClick={() => keysRef.current?.close()}>Close</button>
         </div>
         <dl>
-          {([['↓ ↑', 'Move between suggestions'], ['→ or Space', 'Go deeper'], ['←', 'Go up'], ['Enter', 'Open the focused card'], ['X or Delete', 'Dismiss the focused card'], ['R', 'Re-roll'], ['S', 'Steer'], ['F', 'Fit the path on screen'], ['⌘Z / Ctrl+Z', 'Undo'], ['?', 'Show or hide this list']] as const).map(([k, d]) => (
+          {SHORTCUTS.map(([k, d]) => (
             <Fragment key={k}><dt><kbd>{k}</kbd></dt><dd>{d}</dd></Fragment>
           ))}
         </dl>

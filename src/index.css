@@ -228,10 +228,14 @@ html, body, #root { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; -webkit-font-smoothing: antialiased; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
+/* A desktop app, not a page: controls take the arrow cursor and the chrome is not selectable text.
+   What people read or copy (notes, summaries, the article, fields) stays selectable. */
+[data-platform='darwin'] button, [data-platform='win32'] button, [data-platform='linux'] button { cursor: default; }
+.app, .settings-shell { user-select: none; -webkit-user-select: none; }
+.panel section, .panel .path, .panel h1, .article, .field, textarea, input { user-select: text; -webkit-user-select: text; }
 :focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-.settings-page { max-width: 560px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--btn); font-size: 13px; white-space: nowrap; }
 .btn:disabled { opacity: 0.5; cursor: default; }
@@ -270,6 +274,9 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .nav-item::before { content: ''; position: absolute; left: 0; top: 50%; width: 3px; height: 16px; translate: 0 -50%; border-radius: 2px; background: transparent; }
 .nav-item.on::before { background: var(--pip); }
 .nav-item .dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; border: 1.5px solid currentColor; }
+.nav-item .item-text { display: flex; flex-direction: column; gap: 1px; padding: 5px 0; line-height: 1.3; }
+.nav-item .sub { font-size: 11.5px; color: var(--text2); font-weight: 400; }
+.nav-item.on .sub { color: inherit; opacity: 0.75; }
 .nav-item .count { font-family: var(--mono); font-size: 11px; color: var(--text2); }
 .nav-item.on .count { color: inherit; opacity: 0.8; }
 .side-h { margin: 16px 12px 6px; font-family: var(--label-font); font-size: 11px; font-weight: 600; letter-spacing: var(--label-track); text-transform: var(--label-case); color: var(--text2); }
@@ -381,7 +388,9 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .toc-meta { flex: 0 0 auto; font-family: var(--mono); font-size: 12px; color: var(--text2); }
 .toc .del { position: absolute; right: 0; width: 30px; height: 30px; opacity: 0; transition: opacity var(--dur-1) var(--ease-out); }
 .toc li:hover .del, .toc .del:focus-visible { opacity: 1; }
-.toc-search { width: 100%; margin-bottom: 12px; }
+.search-field { position: relative; margin-bottom: 12px; }
+.search-field svg { position: absolute; left: 12px; top: 50%; translate: 0 -50%; color: var(--text2); pointer-events: none; }
+.toc-search { width: 100%; padding-left: 34px; }
 .toc li.toc-hits { display: block; border-top: none; padding: 0 0 8px; }
 .toc-hit { display: block; margin-left: 16px; text-align: left; }
 
@@ -437,7 +446,14 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 textarea.field { resize: vertical; padding: 10px 12px; min-height: 80px; border-radius: min(var(--field-r), 12px); }
 .steer { display: flex; gap: 8px; }
 .steer .field { flex: 1 1 auto; min-width: 0; min-height: 36px; }
-.quiet-actions { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 4px; border-top: 1px solid var(--border); }
+.quiet-actions { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+/* Plain buttons, not web links: no underline, a quiet hover like the sidebar's. */
+.quiet-actions .link-btn { padding: 5px 8px; margin-left: -8px; margin-right: 8px; border-radius: 6px; text-decoration: none; }
+.quiet-actions .link-btn:hover:not(:disabled) { background: var(--seg-bg); }
+/* Errors sit in the panel as a banner with a way to close it, never as an alert. */
+.banner { display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--error) 35%, transparent); background: color-mix(in srgb, var(--error) 9%, transparent); color: var(--text); font-size: 13px; line-height: 1.45; }
+.banner > svg { flex: 0 0 auto; margin-top: 1px; color: var(--error); }
+.banner .icon-btn { width: 24px; height: 24px; margin: -3px -3px 0 0; }
 .steer-chip { margin: 0; display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px 0 12px; border-radius: min(var(--radius), 17px); background: var(--item-on); color: var(--item-on-text); font-size: 13px; animation: pop var(--dur-2) var(--ease-out) both; }
 .steer-chip b { font-weight: 600; }
 .steer-chip .signal { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--active); }
@@ -459,13 +475,6 @@ textarea.field { resize: vertical; padding: 10px 12px; min-height: 80px; border-
 
 /* ---------- Settings ---------- */
 .dialog.settings { width: min(560px, 100%); overflow-y: auto; }
-.setting { display: flex; flex-direction: column; gap: 6px; }
-.setting > label { font-size: 13px; font-weight: 500; }
-.setting .row { display: flex; gap: 8px; }
-.setting .row .field { flex: 1 1 auto; min-width: 0; }
-.setting .field { min-height: 40px; }
-.setting .label { font-size: 13px; font-weight: 500; }
-.settings-h { margin: 8px 0 0; font-family: var(--display); font-size: 18px; font-weight: 600; font-variation-settings: var(--disp-var); }
 .key { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text2); }
 .key li { display: flex; align-items: center; gap: 10px; }
 /* The M3 color wheel: twelve hues on a ring, plus wallpaper-style presets. */
@@ -558,3 +567,60 @@ textarea.field { resize: vertical; padding: 10px 12px; min-height: 80px; border-
 .attribution { margin: 8px 0 0; font-size: 12px; }
 .attribution a { color: inherit; }
 sup a { color: var(--link); text-decoration: none; font-size: 0.75em; padding: 0 1px }
+
+/* ---------- Settings window ----------
+   A toolbar of panes with the pane's name as the title (Mac); a left rail on Windows. Settings sit in
+   rounded groups of rows: label and hint on the left, the control on the right. */
+.settings-shell { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
+.settings-bar { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 9px 16px 8px; border-bottom: 1px solid var(--border); background: var(--panel); -webkit-app-region: drag; }
+.settings-title { margin: 0; font-family: var(--sans); font-size: 13px; font-weight: 600; line-height: 18px; }
+.settings-bar nav { display: flex; gap: 2px; -webkit-app-region: no-drag; }
+.settings-bar nav button { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 70px; padding: 6px 8px 5px; border: none; border-radius: 8px; background: transparent; color: var(--text2); font-size: 11.5px; }
+.settings-bar nav button:hover { color: var(--text); background: var(--seg-bg); }
+.settings-bar nav button[aria-selected='true'] { color: var(--active); background: var(--seg-bg); font-weight: 600; }
+.settings-body { flex: 1 1 auto; overflow-y: auto; padding: 22px 28px 28px; display: flex; flex-direction: column; gap: 22px; }
+.group-h { margin: 0 0 8px 4px; font-family: var(--sans); font-size: 13px; font-weight: 600; }
+.group-box { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.group-foot { margin: 7px 4px 0; font-size: 12px; line-height: 1.45; color: var(--text2); }
+.srow { display: flex; align-items: center; gap: 16px; min-height: 46px; padding: 9px 14px; }
+.srow + .srow { border-top: 1px solid var(--border); }
+.srow-text { flex: 1 1 auto; min-width: 0; font-size: 13px; }
+.srow-text p { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text2); }
+.srow-text progress { width: 100%; }
+.srow-ctl { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; max-width: 60%; }
+.srow-ctl .field { width: 240px; max-width: 100%; }
+.settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.settings-actions p { margin: 0; font-size: 13px; }
+.research-form { display: flex; flex-direction: column; gap: 22px; }
+.ok { color: var(--text2); font-size: 13px; }
+.btn-danger { color: var(--error); }
+.switch { appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 auto; width: 38px; height: 22px; margin: 0; border-radius: 11px; background: var(--seg-bg); box-shadow: inset 0 0 0 1px var(--border); transition: background-color var(--dur-1) var(--ease-out); }
+.switch::before { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); transition: translate var(--dur-1) var(--ease-out); }
+.switch:checked { background: var(--active); box-shadow: none; }
+.switch:checked::before { translate: 16px 0; }
+.themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 14px; }
+.theme-tile { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 0; border: none; background: none; color: var(--text); font-size: 12px; }
+.theme-mini { position: relative; display: block; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); }
+.theme-tile[aria-checked='true'] .theme-mini { outline: 2.5px solid var(--active); outline-offset: 2px; }
+.theme-tile[aria-checked='true'] .theme-name { font-weight: 600; }
+.mini-side { position: absolute; inset: 0 auto 0 0; width: 26%; background: var(--panel); border-right: 1px solid var(--border); }
+.mini-card { position: absolute; left: 38%; top: 34%; width: 40%; height: 30%; border-radius: 5px; background: var(--active-bg); border: 1.5px solid var(--active); }
+.mini-go { position: absolute; right: 7%; top: 9%; width: 22%; height: 13%; border-radius: 999px; background: var(--go-bg); }
+.seed-picker { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px; }
+.group-box > .key { padding: 12px 14px; }
+.about { display: flex; align-items: flex-start; gap: 20px; padding: 4px; }
+.about .mark { width: 64px; height: 64px; }
+.about h2 { margin: 0; font-family: var(--display); font-size: 24px; font-weight: 600; font-variation-settings: var(--disp-var); }
+.about p { margin: 4px 0 12px; font-size: 13px; line-height: 1.5; }
+.about a.btn { text-decoration: none; color: var(--text); }
+.shortcut-list { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px 16px; margin: 0; padding: 12px 14px; }
+.shortcut-list dt, .shortcut-list dd { margin: 0; }
+.shortcut-list dd { font-size: 13px; color: var(--text2); }
+/* Windows: the system title bar names the pane; the panes sit in a left rail, as in Windows Settings. */
+[data-platform='win32'] .settings-shell { flex-direction: row; }
+[data-platform='win32'] .settings-bar { width: 196px; align-items: stretch; padding: 12px 8px; border-bottom: none; border-right: 1px solid var(--border); -webkit-app-region: no-drag; }
+[data-platform='win32'] .settings-title { display: none; }
+[data-platform='win32'] .settings-bar nav { flex-direction: column; }
+[data-platform='win32'] .settings-bar nav button { position: relative; flex-direction: row; justify-content: flex-start; gap: 12px; min-height: 36px; padding: 0 12px; font-size: 13.5px; }
+[data-platform='win32'] .settings-bar nav button[aria-selected='true']::before { content: ''; position: absolute; left: 0; top: 50%; width: 3px; height: 16px; translate: 0 -50%; border-radius: 2px; background: var(--active); }
+@media (max-width: 560px) { .srow { flex-wrap: wrap; } .srow-ctl .field { width: 100%; } .themes { grid-template-columns: repeat(2, 1fr); } }

@@ -1,9 +1,16 @@
-import { useEffect, useState } from 'react'
-import type { FormEvent } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import type { CSSProperties, FormEvent, KeyboardEvent, ReactNode } from 'react'
 import { bridge, searchFor } from './ai.ts'
 import { wikiSearch } from './wiki.ts'
 import type { LocalModel, Settings } from './ai.ts'
-import { applyM3, DEFAULT_SEED, hslHex, hueSat, SEEDS } from './m3.ts'
+import type { Graph } from './graph.ts'
+import { applyM3, DEFAULT_SEED, hslHex, hueSat, m3Vars, SEEDS } from './m3.ts'
+import { forgetCache } from './net.ts'
+import { BREADTH, prefs, request, setPrefs, SHORTCUTS } from './prefs.ts'
+import type { Prefs } from './prefs.ts'
+import { Mark } from './App.tsx'
+
+declare const __APP_VERSION__: string
 
 export type Theme = 'glass' | 'winui' | 'obsidian' | 'warm' | 'nothing' | 'm3'
 // The theme that matches the system: Liquid Glass on a Mac, WinUI 3 on Windows.
@@ -44,50 +51,194 @@ function groupModels(ids: string[]): [string, string[]][] {
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
 }
 
-// The desktop app's Settings window (index.html#settings): the same form, as the whole page.
+// ---------- Window ----------
+// One toolbar of panes, as Mac settings windows have; on Windows the same panes sit in a left rail.
+type Pane = 'general' | 'appearance' | 'research' | 'data' | 'about'
+const ic = (d: string) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+const PANES: { id: Pane; label: string; icon: ReactNode }[] = [
+  { id: 'general', label: 'General', icon: ic('M4 7h10M18 7h2M4 17h2M10 17h10M14 4.5v5M6 14.5v5M16 7a2 2 0 1 0 0 .01M8 17a2 2 0 1 0 0 .01') },
+  { id: 'appearance', label: 'Appearance', icon: ic('M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.8-.6-1.3-.6-2.1 0-.9.7-1.6 1.6-1.6H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3zM7.5 11.5h.01M10 7.5h.01M15 7.5h.01') },
+  { id: 'research', label: 'Research', icon: ic('M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4M11 8v6M8 11h6') },
+  { id: 'data', label: 'Data', icon: ic('M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3') },
+  { id: 'about', label: 'About', icon: ic('M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 7.5h.01') },
+]
+
+// The desktop app's Settings window (index.html#settings).
 export function SettingsWindow() {
   const [initial, setInitial] = useState<Settings | null>(null)
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
+  // People adjust related settings more than once, so the window reopens on the last pane.
+  const [pane, setPane] = useState<Pane>(() => { try { return (JSON.parse(localStorage.getItem('rh.settingsPane') ?? '"general"') as Pane) } catch { return 'general' } })
+  const [theme, setTheme] = useState<Theme>(() => {
     let t = nativeTheme()
     try { t = (JSON.parse(localStorage.getItem('rh.theme') ?? JSON.stringify(t)) as string).replace(/^dark$/, 'obsidian') as Theme } catch { /* storage unavailable */ }
-    document.documentElement.dataset.theme = t
-    applyM3(t, loadSeed())
+    return t
+  })
+  const [seed, setSeed] = useState<string>(loadSeed)
+  useEffect(() => {
     document.documentElement.dataset.platform = bridge?.platform ?? 'web'
-    document.title = 'Settings'
     bridge?.getSettings().then(setInitial).catch((e) => setError((e as Error).message))
   }, [])
-  if (error) return <p className="error" role="alert" style={{ padding: 24 }}>{error}</p>
-  if (!initial) return null
-  return <SettingsDialog standalone initial={initial} onClose={() => window.close()} onSaved={() => {}} />
+  useEffect(() => { document.documentElement.dataset.theme = theme; applyM3(theme, seed) }, [theme, seed])
+  const label = PANES.find((p) => p.id === pane)!.label
+  // The title names the visible pane.
+  useEffect(() => {
+    document.title = label
+    try { localStorage.setItem('rh.settingsPane', JSON.stringify(pane)) } catch { /* storage unavailable */ }
+  }, [pane, label])
+
+  // Arrow keys move between panes, as in any tab bar.
+  const onTabKey = (e: KeyboardEvent) => {
+    const i = PANES.findIndex((p) => p.id === pane)
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+    if (!step) return
+    e.preventDefault()
+    const next = PANES[(i + step + PANES.length) % PANES.length].id
+    setPane(next)
+    document.getElementById(`tab-${next}`)?.focus()
+  }
+
+  return (
+    <div className="settings-shell">
+      <header className="settings-bar">
+        <h1 className="settings-title">{label}</h1>
+        <nav role="tablist" aria-label="Settings" onKeyDown={onTabKey}>
+          {PANES.map((p) => (
+            <button key={p.id} id={`tab-${p.id}`} type="button" role="tab" aria-selected={pane === p.id} aria-controls="settings-pane" tabIndex={pane === p.id ? 0 : -1} onClick={() => setPane(p.id)}>
+              {p.icon}<span>{p.label}</span>
+            </button>
+          ))}
+        </nav>
+      </header>
+      <main id="settings-pane" className="settings-body" role="tabpanel" aria-labelledby={`tab-${pane}`}>
+        {pane === 'general' && <General />}
+        {pane === 'appearance' && <Appearance theme={theme} setTheme={setTheme} seed={seed} setSeed={setSeed} />}
+        {pane === 'research' && (error ? <p className="error" role="alert">{error}</p>
+          : initial ? <Research initial={initial} onSaved={setInitial} />
+          : <p className="muted">{bridge ? 'Loading…' : 'Choosing a backend needs the desktop app.'}</p>)}
+        {pane === 'data' && <Data />}
+        {pane === 'about' && <About />}
+      </main>
+    </div>
+  )
 }
 
-export function SettingsDialog({ initial, onClose, onSaved, standalone = false }: { initial: Settings; onClose: () => void; onSaved: (s: Settings) => void; standalone?: boolean }) {
-  const [backend, setBackend] = useState(initial.backend)
-  const [models, setModels] = useState(initial.models)
-  const [urls, setUrls] = useState(initial.urls)
-  const [search, setSearch] = useState(initial.search)
-  const [keys, setKeys] = useState<Record<string, string>>({}) // only keys typed in this dialog
-  const [removed, setRemoved] = useState<Set<string>>(new Set())
-  const [options, setOptions] = useState<string[]>([])
-  const [status, setStatus] = useState<{ kind: 'muted' | 'error'; text: string } | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme as Theme) || nativeTheme())
+// ---------- Building blocks ----------
+// Settings come in rounded groups of rows: the label and its hint on the left, the control on the right.
+const Group = ({ title, children, foot }: { title?: string; children: ReactNode; foot?: ReactNode }) => (
+  <section className="group">
+    {title && <h2 className="group-h">{title}</h2>}
+    <div className="group-box">{children}</div>
+    {foot && <p className="group-foot">{foot}</p>}
+  </section>
+)
+const Row = ({ label, hint, htmlFor, children }: { label: ReactNode; hint?: ReactNode; htmlFor?: string; children?: ReactNode }) => (
+  <div className="srow">
+    <div className="srow-text">
+      {htmlFor ? <label htmlFor={htmlFor}>{label}</label> : <span>{label}</span>}
+      {hint && <p>{hint}</p>}
+    </div>
+    {children && <div className="srow-ctl">{children}</div>}
+  </div>
+)
+const Switch = ({ id, on, set }: { id: string; on: boolean; set: (v: boolean) => void }) => (
+  <input id={id} type="checkbox" role="switch" className="switch" checked={on} onChange={(e) => set(e.target.checked)} />
+)
+
+// ---------- General ----------
+function General() {
+  const [p, setP] = useState<Prefs>(prefs)
+  const set = (patch: Partial<Prefs>) => setP(setPrefs(patch))
+  return (
+    <>
+      <Group title="Dives">
+        <Row label="Reopen your last dive at launch" hint="Off: Rabbithole opens on Home." htmlFor="open-last"><Switch id="open-last" on={p.openLast} set={(v) => set({ openLast: v })} /></Row>
+        <Row label="New dives start at" hint="How many sideways jumps each level offers. You can change it in any dive." htmlFor="breadth">
+          <select id="breadth" className="field" value={BREADTH.find((b) => b.spread === p.breadth)?.spread ?? 20} onChange={(e) => set({ breadth: Number(e.target.value) })}>
+            {BREADTH.map((b) => <option key={b.label} value={b.spread}>{b.label}</option>)}
+          </select>
+        </Row>
+      </Group>
+      <Group title="Research">
+        <Row label="Add recent news to notes" hint="Headlines about the topic, from the free web search." htmlFor="news"><Switch id="news" on={p.news} set={(v) => set({ news: v })} /></Row>
+        <Row label="Load the next level ahead of time" hint="With Wikipedia as the backend, Go deeper is then usually instant." htmlFor="prefetch"><Switch id="prefetch" on={p.prefetch} set={(v) => set({ prefetch: v })} /></Row>
+      </Group>
+    </>
+  )
+}
+
+// ---------- Appearance ----------
+function Appearance({ theme, setTheme, seed, setSeed }: { theme: Theme; setTheme: (t: Theme) => void; seed: string; setSeed: (s: string) => void }) {
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches
   // The theme applies at once, here and in the main window.
   const pickTheme = (t: Theme) => {
     setTheme(t)
-    document.documentElement.dataset.theme = t
-    applyM3(t, seed)
     try { localStorage.setItem('rh.theme', JSON.stringify(t)) } catch { /* storage unavailable */ }
     bridge?.setMenuState({ theme: t }).catch(() => {})
   }
   // Material 3: one seed color makes every color role. The main window follows the saved value.
-  const [seed, setSeed] = useState<string>(loadSeed)
   const pickSeed = (hex: string) => {
     setSeed(hex)
-    applyM3(theme, hex)
     try { localStorage.setItem('rh.seed', JSON.stringify(hex)) } catch { /* storage unavailable */ }
   }
+  return (
+    <>
+      <Group title="Theme" foot="Light or dark follows your system setting.">
+        {/* Each tile is drawn in its own theme's colors. */}
+        <div className="themes" role="radiogroup" aria-label="Theme">
+          {THEMES.map((t) => (
+            <button key={t.value} type="button" role="radio" aria-checked={theme === t.value} className="theme-tile" onClick={() => pickTheme(t.value)}>
+              <span className="theme-mini" data-theme={t.value} style={t.value === 'm3' ? (m3Vars(seed, dark) as CSSProperties) : undefined} aria-hidden="true">
+                <span className="mini-side" /><span className="mini-card" /><span className="mini-go" />
+              </span>
+              <span className="theme-name">{t.label}</span>
+            </button>
+          ))}
+        </div>
+      </Group>
+      {theme === 'm3' && (
+        <Group title="Seed color" foot="Every color in the app is a tone of this one, as on Android.">
+          <div className="seed-picker">
+            <div className="wheel" role="group" aria-label="Seed color wheel">
+              {Array.from({ length: 12 }, (_, i) => {
+                const hex = hslHex(i * 30, 0.6, 0.5), a = (i * 30 * Math.PI) / 180
+                return <button key={hex} type="button" aria-label={`Hue ${i * 30}°`} aria-pressed={hueSat(seed).h === hueSat(hex).h}
+                  style={{ left: 110 + 93 * Math.cos(a), top: 110 + 93 * Math.sin(a), background: hex }} onClick={() => pickSeed(hex)} />
+              })}
+              <span className="seed">{seed.toUpperCase()}</span>
+            </div>
+            <div className="presets" role="group" aria-label="Wallpaper colors">
+              {SEEDS.map(([name, hex]) => <button key={hex} type="button" aria-label={name} title={name} aria-pressed={seed.toLowerCase() === hex.toLowerCase()} style={{ background: hex }} onClick={() => pickSeed(hex)} />)}
+              <label className="sr-only" htmlFor="seed-custom">Any color</label>
+              <input id="seed-custom" type="color" value={seed} onChange={(e) => pickSeed(e.target.value)} title="Any color" />
+            </div>
+          </div>
+        </Group>
+      )}
+      <Group title="Reading the graph">
+        <ul className="key">
+          <li><span className="swatch" style={{ border: '2px solid var(--active)' }} />Active: the node you are on.</li>
+          <li><span className="swatch" style={{ border: '1px solid var(--ctrl-border)', background: 'var(--surface)' }} />Opened: a node you visited.</li>
+          <li><span className="swatch" style={{ border: '1.5px dashed var(--ctrl-border)' }} />Suggestion: click to open it.</li>
+          <li><span className="swatch" style={{ border: '1.5px dashed var(--tangent)' }} />Tangent: a sideways jump, in italics.</li>
+          <li><span className="swatch" style={{ border: '2px solid var(--steer-ring)' }} />Steered: narrowed with your own words.</li>
+        </ul>
+      </Group>
+    </>
+  )
+}
+
+// ---------- Research ----------
+function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settings) => void }) {
+  const [backend, setBackend] = useState(initial.backend)
+  const [models, setModels] = useState(initial.models)
+  const [urls, setUrls] = useState(initial.urls)
+  const [search, setSearch] = useState(initial.search)
+  const [keys, setKeys] = useState<Record<string, string>>({}) // only keys typed here
+  const [removed, setRemoved] = useState<Set<string>>(new Set())
+  const [options, setOptions] = useState<string[]>([])
+  const [status, setStatus] = useState<{ kind: 'muted' | 'error' | 'ok'; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
   const [local, setLocal] = useState<LocalModel[]>([])
   const [progress, setProgress] = useState<number | null>(null)
   useEffect(() => { if (backend === 'local') bridge!.localModels().then(setLocal).catch(() => {}) }, [backend])
@@ -114,10 +265,10 @@ export function SettingsDialog({ initial, onClose, onSaved, standalone = false }
     setRemoved(new Set())
     return s
   }
-  const run = async (label: string, fn: () => Promise<string>) => {
+  const run = async (label: string, fn: () => Promise<string>, kind: 'muted' | 'ok' = 'muted') => {
     setBusy(true)
     setStatus({ kind: 'muted', text: `${label}…` })
-    try { setStatus({ kind: 'muted', text: await fn() }) } catch (e) { setStatus({ kind: 'error', text: (e as Error).message }) } finally { setBusy(false) }
+    try { setStatus({ kind, text: await fn() }) } catch (e) { setStatus({ kind: 'error', text: (e as Error).message }) } finally { setBusy(false) }
   }
   const loadModels = () => run('Loading models', async () => {
     await persist()
@@ -136,159 +287,188 @@ export function SettingsDialog({ initial, onClose, onSaved, standalone = false }
     if (backend === 'free') return (await wikiSearch('rabbit hole')).length ? 'Wikipedia is reachable.' : 'Wikipedia returned nothing.'
     const reply = await bridge!.complete('Reply with only this JSON: {"ok":true}')
     if (!reply.includes('ok')) throw new Error(`Unexpected reply: ${reply.slice(0, 120)}`)
-    return `Connected. ${search !== 'none' ? 'Web search works too.' : ''}`
-  })
-  const save = async (e: FormEvent) => {
-    e.preventDefault()
-    setBusy(true)
-    try { await persist(); onClose() } catch (err) { setStatus({ kind: 'error', text: (err as Error).message }) } finally { setBusy(false) }
-  }
+    return `Connected.${search !== 'none' ? ' Web search works too.' : ''}`
+  }, 'ok')
+  const save = (e: FormEvent) => { e.preventDefault(); run('Saving', async () => { await persist(); return 'Saved.' }, 'ok') }
 
-  const keyField = (name: string, label: string) => (
-    <div className="setting">
-      <label htmlFor={`key-${name}`}>{label}</label>
-      <div className="row">
-        <input id={`key-${name}`} type="password" className="field" autoComplete="off"
-          placeholder={keySet(name) ? 'Saved. Type to replace it.' : 'Paste your key'}
-          value={keys[name] ?? ''} onChange={(e) => setKeys((k) => ({ ...k, [name]: e.target.value }))} />
-        {keySet(name) && <button type="button" className="btn" onClick={() => { setRemoved((r) => new Set(r).add(name)); setKeys((k) => ({ ...k, [name]: '' })) }}>Remove</button>}
-      </div>
-    </div>
+  const keyRow = (name: string, label: string) => (
+    <Row label={label} htmlFor={`key-${name}`}>
+      <input id={`key-${name}`} type="password" className="field" autoComplete="off"
+        placeholder={keySet(name) ? 'Saved. Type to replace it.' : 'Paste your key'}
+        value={keys[name] ?? ''} onChange={(e) => setKeys((k) => ({ ...k, [name]: e.target.value }))} />
+      {keySet(name) && <button type="button" className="btn" onClick={() => { setRemoved((r) => new Set(r).add(name)); setKeys((k) => ({ ...k, [name]: '' })) }}>Remove</button>}
+    </Row>
   )
 
-  const form = (
-      <form className={standalone ? 'settings-page' : 'dialog settings'} role={standalone ? undefined : 'dialog'} aria-modal={standalone ? undefined : true} aria-label="Settings" onSubmit={save}>
-        {!standalone && <div className="dialog-head">
-          <h2>Settings</h2>
-          <button type="button" className="btn" onClick={onClose}>Close</button>
-        </div>}
-
-        {standalone && <>
-          <h2 className="settings-h">Appearance</h2>
-          <div className="setting">
-            <label htmlFor="theme">Theme</label>
-            <select id="theme" className="field" value={theme} onChange={(e) => pickTheme(e.target.value as Theme)}>
-              {THEMES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
-            <p className="muted">Light or dark follows your system setting. Changes apply right away.</p>
-          </div>
-          {theme === 'm3' && (
-            <div className="setting">
-              <span className="label">Seed color</span>
-              <div className="wheel" role="group" aria-label="Seed color wheel">
-                {Array.from({ length: 12 }, (_, i) => {
-                  const hex = hslHex(i * 30, 0.6, 0.5), a = (i * 30 * Math.PI) / 180
-                  return <button key={hex} type="button" aria-label={`Hue ${i * 30}°`} aria-pressed={hueSat(seed).h === hueSat(hex).h}
-                    style={{ left: 110 + 93 * Math.cos(a), top: 110 + 93 * Math.sin(a), background: hex }} onClick={() => pickSeed(hex)} />
-                })}
-                <span className="seed">{seed.toUpperCase()}</span>
-              </div>
-              <div className="presets" role="group" aria-label="Wallpaper colors">
-                {SEEDS.map(([name, hex]) => <button key={hex} type="button" aria-label={name} title={name} aria-pressed={seed.toLowerCase() === hex.toLowerCase()} style={{ background: hex }} onClick={() => pickSeed(hex)} />)}
-                <label className="sr-only" htmlFor="seed-custom">Any color</label>
-                <input id="seed-custom" type="color" value={seed} onChange={(e) => pickSeed(e.target.value)} title="Any color" />
-              </div>
-              <p className="muted">Every color in the app is a tone of this one, as on Android.</p>
-            </div>
-          )}
-          <div className="setting">
-            <span className="label">Reading the graph</span>
-            <ul className="key">
-              <li><span className="swatch" style={{ border: '2px solid var(--active)' }} />Active: the node you are on.</li>
-              <li><span className="swatch" style={{ border: '1px solid var(--ctrl-border)', background: 'var(--surface)' }} />Opened: a node you visited.</li>
-              <li><span className="swatch" style={{ border: '1.5px dashed var(--ctrl-border)' }} />Suggestion: click to open it.</li>
-              <li><span className="swatch" style={{ border: '1.5px dashed var(--tangent)' }} />Tangent: a sideways jump, in italics.</li>
-              <li><span className="swatch" style={{ border: '2px solid var(--steer-ring)' }} />Steered: a topic you added yourself.</li>
-            </ul>
-          </div>
-          <h2 className="settings-h">Research</h2>
-        </>}
-
-        <div className="setting">
-          <label htmlFor="backend">Backend</label>
+  return (
+    <form className="research-form" onSubmit={save}>
+      <Group title="Suggestions and notes" foot={HINTS[backend]}>
+        <Row label="Backend" htmlFor="backend">
           <select id="backend" className="field" value={backend} onChange={(e) => { setBackend(e.target.value); setOptions([]); setStatus(null) }}>
             {initial.backends.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
           </select>
-          <p className="muted">{HINTS[backend]}</p>
-        </div>
-
+        </Row>
         {info.editableUrl && (
-          <div className="setting">
-            <label htmlFor="url">Server URL</label>
+          <Row label="Server URL" htmlFor="url">
             <input id="url" className="field" value={urls[backend] ?? ''} placeholder="http://localhost:11434/v1"
               onChange={(e) => setUrls((u) => ({ ...u, [backend]: e.target.value }))} />
-          </div>
+          </Row>
         )}
-
-        {info.key && keyField(backend, info.key === 'optional' ? 'API key (optional)' : 'API key')}
-
+        {info.key && keyRow(backend, info.key === 'optional' ? 'API key (optional)' : 'API key')}
         {backend === 'local' && (
-          <div className="setting">
-            <label htmlFor="local-model">Model</label>
-            <div className="row">
-              <select id="local-model" className="field" value={model} onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))}>
-                {local.map((m) => <option key={m.id} value={m.id}>{m.label} · {m.size}{m.downloaded ? ' · downloaded' : ''}</option>)}
-              </select>
-              {local.find((m) => m.id === model && !m.downloaded) && (
-                <button type="button" className="btn" disabled={busy} onClick={() => run('Downloading', async () => {
-                  setProgress(0)
-                  try { setLocal(await bridge!.downloadLocal(model)) } finally { setProgress(null) }
-                  return 'Downloaded. It runs offline from now on.'
-                })}>Download</button>
-              )}
-            </div>
-            {progress !== null && <progress className="field" value={progress} max={1} aria-label="Download progress" />}
-          </div>
+          <Row label="Model" htmlFor="local-model" hint={progress !== null ? <progress value={progress} max={1} aria-label="Download progress" /> : undefined}>
+            <select id="local-model" className="field" value={model} onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))}>
+              {local.map((m) => <option key={m.id} value={m.id}>{m.label} · {m.size}{m.downloaded ? ' · downloaded' : ''}</option>)}
+            </select>
+            {local.find((m) => m.id === model && !m.downloaded) && (
+              <button type="button" className="btn" disabled={busy} onClick={() => run('Downloading', async () => {
+                setProgress(0)
+                try { setLocal(await bridge!.downloadLocal(model)) } finally { setProgress(null) }
+                return 'Downloaded. It runs offline from now on.'
+              }, 'ok')}>Download</button>
+            )}
+          </Row>
         )}
-
         {backend !== 'offline' && backend !== 'free' && backend !== 'local' && (
-          <div className="setting">
-            <label htmlFor="model-name">Model</label>
-            <div className="row">
-              {options.length ? (
-                <select id="model-name" className="field" value={model} onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))}>
-                  {model && !options.includes(model) && <option value={model}>{model}</option>}
-                  {groupModels(options).map(([group, ids]) => (
-                    <optgroup key={group} label={group}>
-                      {ids.map((id) => <option key={id} value={id}>{id.slice(group.length ? group.length + 1 : 0)}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-              ) : (
-                <input id="model-name" className="field" value={model}
-                  placeholder={backend === 'opencode' ? 'provider/model' : 'Model name'}
-                  onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))} />
-              )}
-              <button type="button" className="btn" onClick={loadModels} disabled={busy}>{options.length ? 'Reload' : 'Load models'}</button>
-              {options.length > 0 && <button type="button" className="btn" onClick={() => setOptions([])}>Type a name</button>}
-            </div>
-          </div>
+          <Row label="Model" htmlFor="model-name">
+            {options.length ? (
+              <select id="model-name" className="field" value={model} onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))}>
+                {model && !options.includes(model) && <option value={model}>{model}</option>}
+                {groupModels(options).map(([group, ids]) => (
+                  <optgroup key={group} label={group}>
+                    {ids.map((id) => <option key={id} value={id}>{id.slice(group.length ? group.length + 1 : 0)}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            ) : (
+              <input id="model-name" className="field" value={model} placeholder={backend === 'opencode' ? 'provider/model' : 'Model name'}
+                onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))} />
+            )}
+            <button type="button" className="btn" onClick={options.length ? () => setOptions([]) : loadModels} disabled={busy}>{options.length ? 'Type a name' : 'Load models'}</button>
+          </Row>
         )}
+      </Group>
 
-        <div className="setting">
-          <label htmlFor="search">Web search for research notes</label>
+      <Group title="Web search" foot={search === 'none'
+        ? 'Notes come from the model’s memory, and their sources are not checked.'
+        : 'Each note is based on the top search results, and only those pages are listed as sources.'}>
+        <Row label="Search with" htmlFor="search">
           <select id="search" className="field" value={search} onChange={(e) => setSearch(e.target.value)}>
             {initial.searchProviders.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
-          <p className="muted">
-            {search === 'none'
-              ? 'Research notes come from the model’s memory, and their sources are not checked.'
-              : 'Each research note is based on the top search results, and only those pages are listed as sources.'}
-          </p>
-        </div>
-        {search !== 'none' && search !== 'wikipedia' && search !== 'web' && keyField(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
+        </Row>
+        {search !== 'none' && search !== 'wikipedia' && search !== 'web' && keyRow(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
+      </Group>
 
-        {!initial.encryption && <p className="error">This system has no secure key storage, so API keys cannot be saved.</p>}
-        <p className="muted">Keys are encrypted with your system keychain and stay on this computer. They are sent only to the provider they belong to.</p>
-        {status && <p className={status.kind} role="status">{status.text}</p>}
+      {!initial.encryption && <p className="error">This system has no secure key storage, so API keys cannot be saved.</p>}
+      <p className="group-foot">Keys are encrypted with your system keychain and stay on this computer. Each is sent only to the provider it belongs to.</p>
 
-        <div className="dialog-actions">
-          <button type="button" className="btn" onClick={test} disabled={busy}>Test connection</button>
-          {standalone && <button type="button" className="btn" onClick={onClose}>Cancel</button>}
-          <button type="submit" className="btn btn-primary" disabled={busy}>Save</button>
-        </div>
-      </form>
+      <div className="settings-actions">
+        {status && <p className={`grow ${status.kind}`} role="status">{status.text}</p>}
+        <button type="button" className="btn" onClick={test} disabled={busy}>Test connection</button>
+        <button type="submit" className="btn btn-primary" disabled={busy}>Save</button>
+      </div>
+    </form>
   )
-  if (standalone) return form
-  return <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>{form}</div>
+}
+
+// ---------- Data ----------
+type Dive = { id: string; updated: number; graph: Graph }
+const readDives = (): Dive[] => { try { return JSON.parse(localStorage.getItem('rh.dives') ?? '[]') } catch { return [] } }
+const isDive = (d: unknown): d is Dive => !!d && typeof d === 'object' && typeof (d as Dive).id === 'string' && Array.isArray((d as Dive).graph?.nodes) && (d as Dive).graph.nodes.length > 0
+const mb = (bytes: number) => bytes < 1e6 ? `${Math.max(1, Math.round(bytes / 1e3))} KB` : `${(bytes / 1e6).toFixed(1)} MB`
+
+function Data() {
+  const [dives, setDives] = useState<Dive[]>(readDives)
+  const [used, setUsed] = useState<number | null>(null)
+  const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const file = useRef<HTMLInputElement>(null)
+  const measure = () => navigator.storage?.estimate?.().then((e) => setUsed(e.usage ?? null)).catch(() => {})
+  useEffect(() => {
+    measure()
+    // The main window saves dives as you go; keep the count current.
+    const onStorage = (e: StorageEvent) => { if (e.key === 'rh.dives') setDives(readDives()) }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+  const stops = dives.reduce((t, d) => t + d.graph.nodes.filter((n) => n.status === 'solid').length, 0)
+  const write = (next: Dive[]) => { localStorage.setItem('rh.dives', JSON.stringify(next)); setDives(next); request('reload') }
+
+  const exportAll = () => {
+    const blob = new Blob([JSON.stringify({ app: 'rabbithole', version: 1, dives }, null, 2)], { type: 'application/json' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `Rabbithole dives ${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  }
+  const importFile = async (f: File) => {
+    try {
+      const d = JSON.parse(await f.text())
+      const incoming = (Array.isArray(d) ? d : d?.dives ?? []).filter(isDive)
+      if (!incoming.length) throw new Error('That file has no Rabbithole dives in it.')
+      const have = new Set(dives.map((x) => x.id))
+      const added = incoming.filter((x: Dive) => !have.has(x.id))
+      write([...dives, ...added])
+      setStatus({ kind: 'ok', text: added.length ? `Imported ${added.length} ${added.length === 1 ? 'dive' : 'dives'}.${incoming.length > added.length ? ` ${incoming.length - added.length} you already had were skipped.` : ''}` : 'You already have every dive in that file.' })
+    } catch (e) {
+      setStatus({ kind: 'error', text: e instanceof SyntaxError ? 'That file is not a Rabbithole export.' : (e as Error).message })
+    }
+  }
+  const clearCache = async () => {
+    await forgetCache(true)
+    request('cache-cleared')
+    setStatus({ kind: 'ok', text: 'Cache cleared. Pages load from Wikipedia again the next time you open them.' })
+    measure()
+  }
+  const deleteAll = () => {
+    if (!confirm(`Delete all ${dives.length} dives? This cannot be undone. Export them first if you may want them back.`)) return
+    write([])
+    setStatus({ kind: 'ok', text: 'All dives deleted.' })
+  }
+
+  return (
+    <>
+      <Group title="Your dives" foot="Dives are saved on this computer only.">
+        <Row label={`${dives.length} ${dives.length === 1 ? 'dive' : 'dives'}, ${stops} ${stops === 1 ? 'stop' : 'stops'}`} hint="Export makes one file you can keep or move to another computer.">
+          <button type="button" className="btn" onClick={exportAll} disabled={!dives.length}>Export All…</button>
+          <button type="button" className="btn" onClick={() => file.current?.click()}>Import…</button>
+          <input ref={file} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = '' }} />
+        </Row>
+      </Group>
+      <Group title="Cache">
+        <Row label="Saved pages" hint={`Wikipedia pages are kept for 7 days so revisits are instant and work offline.${used !== null ? ` Rabbithole uses about ${mb(used)} on this computer.` : ''}`}>
+          <button type="button" className="btn" onClick={clearCache}>Clear Cache</button>
+        </Row>
+      </Group>
+      <Group>
+        <Row label="Delete all dives" hint="Removes every dive and its notes from this computer.">
+          <button type="button" className="btn btn-danger" onClick={deleteAll} disabled={!dives.length}>Delete All…</button>
+        </Row>
+      </Group>
+      {status && <p className={status.kind} role="status">{status.text}</p>}
+    </>
+  )
+}
+
+// ---------- About ----------
+function About() {
+  return (
+    <>
+      <div className="about">
+        <Mark />
+        <div>
+          <h2>Rabbithole</h2>
+          <p className="muted">Version {__APP_VERSION__}</p>
+          <p>A graph explorer for deep dives: open, steer and dismiss suggestions until you reach the bottom of a topic.</p>
+          <a className="btn" href="https://github.com/codezeroexe/rabbithole" target="_blank" rel="noreferrer">Rabbithole on GitHub</a>
+        </div>
+      </div>
+      <Group title="Keyboard shortcuts" foot="In the main window, press ? to see these at any time.">
+        <dl className="shortcut-list">
+          {SHORTCUTS.map(([k, d]) => <Fragment key={k}><dt><kbd>{k}</kbd></dt><dd>{d}</dd></Fragment>)}
+        </dl>
+      </Group>
+    </>
+  )
 }
