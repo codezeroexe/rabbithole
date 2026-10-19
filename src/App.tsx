@@ -422,7 +422,7 @@ export default function App() {
     if (!g) return
     const ghosts = kidsOf(g, g.active).filter((n) => n.status === 'ghost')
     const best = ghosts.find((n) => !n.tangent) ?? ghosts[0]
-    if (best) select(best.id)
+    if (best) { chime('deeper'); select(best.id) }
   }, [select])
 
   // A new dive keeps the current one in the list; nothing is lost.
@@ -579,7 +579,8 @@ export default function App() {
     }
   }
 
-  const view = useMemo(() => (graph ? buildView(graph, unfolded) : null), [graph, unfolded])
+  // prefsTick: the graph layout pref can change in Settings.
+  const view = useMemo(() => (graph ? buildView(graph, unfolded) : null), [graph, unfolded, prefsTick])
 
   // Camera: world point P sits at origin + pan + zoom * (P - active). Origin is the .camera anchor (34%, 46%).
   const origin = { x: size.w * 0.34, y: size.h * 0.46 }
