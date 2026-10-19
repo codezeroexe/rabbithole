@@ -305,7 +305,9 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .rail { position: absolute; transform: translateX(-50%); width: 220px; display: flex; gap: 8px; align-items: baseline; font-family: var(--label-font); font-size: 11px; text-transform: var(--label-case); letter-spacing: var(--label-track); color: var(--text2); pointer-events: none; white-space: nowrap; }
 .rail b { color: var(--text); font-weight: 500; }
 .camera { position: absolute; left: 34%; top: 46%; width: 0; height: 0; transition: transform 0.45s cubic-bezier(.32,.72,0,1); }
-.stage.dragging .camera { transition: none; }
+.stage.dragging .camera, .stage.wheeling .camera { transition: none; }
+.camera { transform-origin: 0 0; }
+.minimap { position: absolute; right: 12px; bottom: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; overflow: hidden; }
 .edge { position: absolute; height: 0; transform-origin: 0 0; transition: all 0.4s ease; }
 .card-wrap { position: absolute; transform: translate(-50%, -50%); transition: left 0.4s ease, top 0.4s ease, opacity 0.3s ease, width 0.3s ease; }
 .card { position: relative; width: 100%; display: flex; flex-direction: column; gap: 6px; text-align: left; border-radius: var(--card-radius); color: var(--text); backdrop-filter: var(--card-blur, none); -webkit-backdrop-filter: var(--card-blur, none); transition: all 0.3s ease; }
@@ -442,6 +444,12 @@ textarea.field { resize: vertical; padding: 10px 12px; min-height: 80px; border-
 /* ---------- Export dialog ---------- */
 .scrim { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
 .dialog { width: min(680px, 100%); max-height: 85vh; display: flex; flex-direction: column; gap: 14px; padding: 24px; border-radius: 12px; background: var(--bg); border: 1px solid var(--border); }
+.keys { width: min(420px, calc(100% - 48px)); padding: 24px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+.keys::backdrop { background: var(--scrim); }
+.keys dl { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; margin: 16px 0 0; align-items: center; }
+.keys dt, .keys dd { margin: 0; }
+.keys dd { color: var(--text2); }
+.card:focus-visible { outline: 2px solid var(--active); outline-offset: 3px; }
 .dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .dialog h2 { margin: 0; font-family: var(--display); font-size: 20px; font-weight: 500; }
 .dialog pre { margin: 0; overflow: auto; padding: 14px; border-radius: 6px; background: var(--surface); font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }

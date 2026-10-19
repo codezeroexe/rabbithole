@@ -405,8 +405,19 @@ handle('menu:state', (state) => {
 })
 handle('models:list', (b) => listModels(b))
 handle('ai:complete', (prompt, schema) => complete(prompt, schema))
-handle('search:web', (query) => webSearch(query))
-handle('search:news', (query) => newsSearch(query))
+// In-memory memo for search results, oldest key out past 200. Failures throw, so they are never kept.
+const memo = new Map()
+async function memoized(key, ttl, fn) {
+  const hit = memo.get(key)
+  if (hit && Date.now() - hit.t < ttl) return hit.value
+  const value = await fn()
+  memo.delete(key)
+  memo.set(key, { t: Date.now(), value })
+  if (memo.size > 200) memo.delete(memo.keys().next().value)
+  return value
+}
+handle('search:web', (query) => memoized(`web|${settings.search}|${query}`, 3_600_000, () => webSearch(query)))
+handle('search:news', (query) => memoized(`news|${query}`, 900_000, () => newsSearch(query)))
 handle('local:list', () => localModels())
 ipcMain.handle('local:download', async (e, id) => {
   try { return { ok: true, value: await downloadLocal(id, (p) => e.sender.send('local:progress', id, p)) } } catch (err) { return { ok: false, error: err.message ?? String(err) } }
@@ -505,7 +516,7 @@ function buildMenu() {
       ...(app.isPackaged ? [] : [{ type: 'separator' }, { role: 'toggleDevTools' }]),
     ] },
     { role: 'windowMenu' },
-    { role: 'help', submenu: [{ label: 'Rabbithole on GitHub', click: () => shell.openExternal('https://github.com/codezeroexe/rabbithole') }] },
+    { role: 'help', submenu: [{ label: 'Keyboard Shortcuts', click: () => send('shortcuts') }, { label: 'Rabbithole on GitHub', click: () => shell.openExternal('https://github.com/codezeroexe/rabbithole') }] },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }

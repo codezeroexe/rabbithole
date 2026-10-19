@@ -5,7 +5,7 @@ import {
   addGhosts, clearGhosts, kindOf, linkNode, steerOn, contextFor, dismissNode, exportMarkdown, exportVault, find, kidsOf, liveKids,
   COLUMN, newGraph, pathOf, relayout, SKELETONS, tangentsFor,
 } from './graph.ts'
-import type { Graph, GraphNode, Research, Suggestion } from './graph.ts'
+import type { ExpandContext, Graph, GraphNode, Research, Suggestion } from './graph.ts'
 import { bridge, listProxyModels, research, searchFor, suggest } from './ai.ts'
 import type { ModelOption, Settings } from './ai.ts'
 import { mockResearch, mockSuggest } from './mock.ts'
@@ -111,6 +111,12 @@ export default function App() {
   const [exportMode, setExportMode] = useState<'md' | 'vault' | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const [wheeling, setWheeling] = useState(false)
+  const [size, setSize] = useState({ w: 0, h: 0 })
+  const stageRef = useRef<HTMLElement>(null)
+  const wheelTimer = useRef(0)
+  const hoverTimer = useRef(0)
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null)
   const ref = useRef<Graph | null>(graph)
   const modelRef = useRef(model)
@@ -171,6 +177,7 @@ export default function App() {
     ref.current = g
     setGraph(g)
     setPan({ x: 0, y: 0 })
+    prefetched.current.clear()
   }
   const undo = () => {
     const g = past.current.pop()
@@ -185,14 +192,11 @@ export default function App() {
     restore(g)
   }
 
-  const expand = useCallback(async (id: string) => {
-    const req = reqSeq++
-    const g = commit((g) => { clearGhosts(g, id); const n = find(g, id); if (n) n.loading = req })
-    if (!g || !find(g, id)) return
-    const ctx = contextFor(g, id)
-    const kind = engine()
+  // Suggestions for one node, never touching the graph or the error banner: the caller decides what to show.
+  const fetchSuggestions = useCallback(async (ctx: ExpandContext, kind: string): Promise<{ items: Suggestion[]; ref?: string; error?: string }> => {
     let items: Suggestion[] = []
     let ref: string | undefined
+    let error: string | undefined
     try {
       if (kind === OFFLINE) items = mockSuggest(ctx)
       else if (kind === FREE) { const r = await wikiSuggest(ctx); items = wikiItems(r.items); ref = r.ref }
@@ -206,20 +210,62 @@ export default function App() {
       }
     } catch (e) {
       const msg = (e as Error).message
-      if (kind === FREE || kind === OFFLINE) setError(`Suggestions failed: ${msg}`)
+      if (kind === FREE || kind === OFFLINE) error = `Suggestions failed: ${msg}`
       else {
-        try { const r = await wikiSuggest(ctx); items = wikiItems(r.items); ref = r.ref; setError(`Suggestions failed: ${msg} Showing Wikipedia suggestions instead.`) }
-        catch { setError(`Suggestions failed: ${msg}`) }
+        try { const r = await wikiSuggest(ctx); items = wikiItems(r.items); ref = r.ref; error = `Suggestions failed: ${msg} Showing Wikipedia suggestions instead.` }
+        catch { error = `Suggestions failed: ${msg}` }
       }
     }
-    commit((g) => {
+    return { items, ref, error }
+  }, [])
+
+  // Prefetch the next level on the free engine only: cloud models cost money, the local one has two slots.
+  // Results wait in the map until expand claims them; at most 2 run at once, extras are dropped.
+  // r is filled once the fetch settles, so expand can skip the loading state entirely.
+  type Fetched = { items: Suggestion[]; ref?: string; error?: string }
+  const prefetched = useRef(new Map<string, { p: Promise<Fetched>; r?: Fetched }>())
+  const inflight = useRef(0)
+  const prefetch = useCallback((id: string) => {
+    const g = ref.current
+    const n = g && find(g, id)
+    if (!g || !n || engine() !== FREE || inflight.current >= 2) return
+    const key = `${id}:${g.spread}:${n.rolls}`
+    if (prefetched.current.has(key)) return
+    inflight.current++
+    const e: { p: Promise<Fetched>; r?: Fetched } = { p: fetchSuggestions(contextFor(g, id), FREE) }
+    prefetched.current.set(key, e)
+    e.p.then((r) => { e.r = r }).finally(() => { inflight.current-- })
+  }, [fetchSuggestions])
+
+  const expand = useCallback(async (id: string) => {
+    const req = reqSeq++
+    const cur = ref.current
+    const cn = cur && find(cur, id)
+    const key = cn ? `${id}:${cur.spread}:${cn.rolls}` : ''
+    const hit = prefetched.current.get(key)
+    prefetched.current.delete(key)
+    // A prefetch that already landed needs no loading state at all.
+    const g = commit((g) => { clearGhosts(g, id); const n = find(g, id); if (n && !hit?.r) n.loading = req })
+    if (!g || !find(g, id)) return
+    const ctx = contextFor(g, id)
+    const { items, ref: found, error } = hit?.r ?? await (hit?.p ?? fetchSuggestions(ctx, engine()))
+    if (error) setError(error)
+    let applied = false
+    const next = commit((g) => {
       const n = find(g, id)
-      if (!n || n.loading !== req) return
+      if (!n || (!hit?.r && n.loading !== req)) return
+      applied = true
       n.loading = undefined
-      if (ref && !n.ref) n.ref = ref
+      if (found && !n.ref) n.ref = found
       addGhosts(g, id, items)
     })
-  }, [commit])
+    // Warm the Go-deeper target (same pick as deeper()) while the user reads.
+    if (applied && next) {
+      const ghosts = kidsOf(next, id).filter((k) => k.status === 'ghost')
+      const best = ghosts.find((k) => !k.tangent) ?? ghosts[0]
+      if (best) prefetch(best.id)
+    }
+  }, [commit, fetchSuggestions, prefetch])
 
   const doResearch = useCallback(async (id: string) => {
     const req = reqSeq++
@@ -284,11 +330,12 @@ export default function App() {
     if (!seed) return
     const g = { ...newGraph(seed), updated: Date.now() }
     morph(() => {
-      past.current = []; future.current = []
+      past.current = []; future.current = []; prefetched.current.clear()
       ref.current = g
       setDiveId(`d${Date.now().toString(36)}`)
       setGraph(g)
       setSeedText('')
+      setZoom(1)
       setError(null)
       setComposing(false)
       select('root')
@@ -330,7 +377,12 @@ export default function App() {
     snapshot()
     const old = ref.current?.spread ?? v
     commit((g) => { g.spread = v })
-    if (tangentsFor(v) !== tangentsFor(old) && ref.current) expand(ref.current.active)
+    if (tangentsFor(v) !== tangentsFor(old) && ref.current) { prefetched.current.clear(); expand(ref.current.active) }
+  }
+  // Resting on a ghost card for 400 ms warms its children.
+  const hoverGhost = (id: string, ghost: boolean) => {
+    window.clearTimeout(hoverTimer.current)
+    if (ghost) hoverTimer.current = window.setTimeout(() => prefetch(id), 400)
   }
   const deeper = useCallback(() => {
     const g = ref.current
@@ -341,13 +393,13 @@ export default function App() {
   }, [select])
 
   // A new dive keeps the current one in the list; nothing is lost.
-  const goHome = (compose: boolean) => morph(() => { past.current = []; future.current = []; setDives(allDives); ref.current = null; setGraph(null); setDiveId(null); setError(null); setPan({ x: 0, y: 0 }); setComposing(compose); setQuery('') })
+  const goHome = (compose: boolean) => morph(() => { past.current = []; future.current = []; prefetched.current.clear(); setDives(allDives); ref.current = null; setGraph(null); setDiveId(null); setError(null); setPan({ x: 0, y: 0 }); setZoom(1); setComposing(compose); setQuery('') })
   const newTopic = () => goHome(true)
   const openDive = (id: string, nodeId?: string) => {
     const d = allDives.find((x) => x.id === id)
     if (!d) return newTopic()
     morph(() => {
-      past.current = []; future.current = []
+      past.current = []; future.current = []; prefetched.current.clear()
       setDives(allDives)
       const g = nodeId && d.graph.nodes.some((n) => n.id === nodeId) ? { ...d.graph, active: nodeId } : d.graph
       ref.current = g
@@ -355,6 +407,7 @@ export default function App() {
       setDiveId(id)
       setError(null)
       setPan({ x: 0, y: 0 })
+      setZoom(1)
     })
   }
   const deleteDive = (id: string) => {
@@ -365,12 +418,25 @@ export default function App() {
   // Text fields keep their own undo; true when the focused element took it.
   const textFieldUndo = (cmd: string) => document.activeElement?.matches('input, textarea, [contenteditable]') ? document.execCommand(cmd) || true : false
   const menuRef = useRef<(cmd: string) => void>(() => {})
+  const fitRef = useRef<() => void>(() => {})
+  const keysRef = useRef<HTMLDialogElement>(null)
+  const steerRef = useRef<HTMLInputElement>(null)
+  const toggleKeys = useCallback(() => { const d = keysRef.current; if (d) { if (d.open) d.close(); else d.showModal() } }, [])
+  // Focus a card once `ready` matches: React renders the state change a frame or two after the key press.
+  const focusCard = (id: string | undefined, ready = '', tries = 20, live = false) => {
+    if (live) id = ref.current?.active
+    if (!id) return
+    const el = document.querySelector<HTMLElement>(`.card[data-id="${id}"]`)
+    if (el && (!ready || document.querySelector(ready + (live ? `[data-id="${id}"]` : '')))) el.focus({ preventScroll: true })
+    else if (tries) requestAnimationFrame(() => focusCard(id, ready, tries - 1, live))
+  }
   useEffect(() => {
     menuRef.current = (cmd: string) => {
       const g = ref.current
       if (cmd === 'undo' || cmd === 'redo') return textFieldUndo(cmd) || (cmd === 'undo' ? undo() : redo())
       if (cmd.startsWith('theme:')) return setTheme(cmd.slice(6) as Theme)
       if (cmd === 'new-topic') return newTopic()
+      if (cmd === 'shortcuts') return toggleKeys()
       if (!g) return
       const n = find(g, g.active)
       if (cmd === 'export-md') setExportMode('md')
@@ -394,17 +460,48 @@ export default function App() {
         if (!textFieldUndo(e.shiftKey ? 'redo' : 'undo')) (e.shiftKey ? redo : undo)()
         return
       }
-      if (e.key !== ' ' || el.closest('input, textarea, select, button, a, [contenteditable]')) return
-      e.preventDefault()
-      deeper()
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const typing = !!el.closest('input, textarea, select, [contenteditable]')
+      if (typing) return
+      const key = e.key.toLowerCase()
+      if (e.key === '?') { e.preventDefault(); return toggleKeys() }
+      const g = ref.current
+      if (!g || keysRef.current?.open) return
+      const onCard = !!el.closest('.card')
+      // Focus follows the camera only when the keyboard was already on a card.
+      const go = (fn: () => void) => {
+        fn()
+        if (onCard) requestAnimationFrame(() => focusCard(ref.current?.active, '.card.is-active', 20, true))
+      }
+      const cur = el.closest<HTMLElement>('.card')?.dataset.id
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const kids = liveKids(g, g.active)
+        const i = cur ? kids.findIndex((n) => n.id === cur) : -1
+        const next = e.key === 'ArrowDown' ? (cur ? kids[i + 1] : kids[0]) : i > 0 ? kids[i - 1] : i === 0 ? find(g, g.active) : undefined
+        if (next) { e.preventDefault(); focusCard(next.id) }
+      } else if (e.key === 'ArrowRight') { e.preventDefault(); go(deeper) }
+      else if (e.key === 'ArrowLeft') { const p = find(g, g.active)?.parent; if (p) { e.preventDefault(); go(() => select(p)) } }
+      else if (e.key === ' ' && !el.closest('button, a')) { e.preventDefault(); go(deeper) }
+      else if (key === 'x' || e.key === 'Delete') {
+        const n = cur ? find(g, cur) : undefined
+        if (!n || n.parent !== g.active) return
+        const sibs = liveKids(g, g.active)
+        const i = sibs.findIndex((s) => s.id === n.id)
+        const next = sibs[i + 1] ?? sibs[i - 1] ?? find(g, g.active)
+        e.preventDefault()
+        dismiss(n.id)
+        requestAnimationFrame(() => focusCard(next?.id, `.card.is-dismissed[data-id="${n.id}"]`))
+      } else if (key === 'r') { e.preventDefault(); reroll() }
+      else if (key === 's') { e.preventDefault(); steerRef.current?.focus() }
+      else if (key === 'f') { e.preventDefault(); fitRef.current() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [deeper])
+  }) // every render: the handler reads dismiss and reroll, which are not memoised
 
   // Drag the empty canvas to pan; a click on a card never starts a drag.
   const onPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
-    if (!graph || (e.target as HTMLElement).closest('.card-wrap, .home')) return
+    if (!graph || (e.target as HTMLElement).closest('.card-wrap, .home, .minimap')) return
     drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }
     setDragging(true)
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -437,6 +534,75 @@ export default function App() {
   }
 
   const view = useMemo(() => (graph ? buildView(graph) : null), [graph])
+
+  // Camera: world point P sits at origin + pan + zoom * (P - active). Origin is the .camera anchor (34%, 46%).
+  const origin = { x: size.w * 0.34, y: size.h * 0.46 }
+  const here = graph && view ? view.pos[graph.active] : null
+  // Pan that puts world point p in the middle of the stage at the given zoom.
+  const centreOn = (p: { x: number; y: number }, z: number) => here && setPan({ x: size.w / 2 - origin.x - z * (p.x - here.x), y: size.h / 2 - origin.y - z * (p.y - here.y) })
+  const fit = () => {
+    if (!graph || !view || !here || !size.w) return
+    const ids = [...pathOf(graph, graph.active), ...kidsOf(graph, graph.active)].map((n) => n.id).filter((id) => view.pos[id])
+    if (!ids.length) return
+    const xs = ids.map((id) => view.pos[id].x), ys = ids.map((id) => view.pos[id].y)
+    const x0 = Math.min(...xs) - 125, x1 = Math.max(...xs) + 125, y0 = Math.min(...ys) - 90, y1 = Math.max(...ys) + 90
+    const z = Math.max(0.3, Math.min(1, size.w / (x1 - x0 + 120), size.h / (y1 - y0 + 120)))
+    setZoom(z)
+    centreOn({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, z)
+  }
+  useEffect(() => { fitRef.current = graph ? fit : () => {} })
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // Native non-passive listener: React's onWheel is passive, so it could not stop the page zooming.
+  const open = !!graph
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el || !open) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setWheeling(true)
+      window.clearTimeout(wheelTimer.current)
+      wheelTimer.current = window.setTimeout(() => setWheeling(false), 150)
+      // Functional update: trackpads fire faster than re-renders, so no delta is lost to a stale pan.
+      if (!e.ctrlKey) return setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }))
+      const z = Math.max(0.3, Math.min(1.5, zoom * Math.exp(-e.deltaY * 0.01)))
+      const r = el.getBoundingClientRect()
+      const sx = e.clientX - r.left - size.w * 0.34, sy = e.clientY - r.top - size.h * 0.46
+      // Keep the world point under the pointer fixed.
+      setZoom(z)
+      setPan({ x: sx - (z / zoom) * (sx - pan.x), y: sy - (z / zoom) * (sy - pan.y) })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [open, pan, zoom, size])
+
+  // Minimap: every live node scaled into 160x110; a click centres the camera on that point.
+  const mini = (() => {
+    if (!graph || !view || !here || !size.w) return null
+    const live = graph.nodes.filter((n) => n.status !== 'dismissed' && view.pos[n.id])
+    if (live.length <= 12) return null
+    const xs = live.map((n) => view.pos[n.id].x), ys = live.map((n) => view.pos[n.id].y)
+    const x0 = Math.min(...xs) - 125, y0 = Math.min(...ys) - 90
+    const k = Math.min(160 / (Math.max(...xs) + 125 - x0), 110 / (Math.max(...ys) + 90 - y0))
+    const ox = (160 - k * (Math.max(...xs) + 125 - x0)) / 2, oy = (110 - k * (Math.max(...ys) + 90 - y0)) / 2
+    const onPath = new Set(pathOf(graph, graph.active).map((n) => n.id))
+    const vx = here.x + (-origin.x - pan.x) / zoom, vy = here.y + (-origin.y - pan.y) / zoom
+    return {
+      k, ox, oy, x0, y0,
+      dots: live.map((n) => ({ id: n.id, x: ox + k * (view.pos[n.id].x - x0) - 2, y: oy + k * (view.pos[n.id].y - y0) - 1.5, hot: onPath.has(n.id) })),
+      box: { x: ox + k * (vx - x0), y: oy + k * (vy - y0), w: (k * size.w) / zoom, h: (k * size.h) / zoom },
+    }
+  })()
+  const onMiniClick = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (!mini) return
+    const r = e.currentTarget.getBoundingClientRect()
+    centreOn({ x: (e.clientX - r.left - mini.ox) / mini.k + mini.x0, y: (e.clientY - r.top - mini.oy) / mini.k + mini.y0 }, zoom)
+  }
   const a = graph && view ? find(graph, graph.active)! : null
   const onGraph = new Set((graph?.nodes ?? []).filter((n) => n.status === 'solid').flatMap((n) => [n.label.toLowerCase(), (n.ref ?? '').toLowerCase()]))
   const [last, ...earlier] = [...allDives].sort((x, y) => y.updated - x.updated)
@@ -508,6 +674,7 @@ export default function App() {
           {graph && a && (
             <div className="toolbar" role="toolbar" aria-label="Dive actions">
               <button type="button" className="btn" onClick={reroll} disabled={!!a.loading}>Re-roll</button>
+              <button type="button" className="btn" onClick={fit} title="Fit the path on screen (F)">Fit</button>
               <div className="segmented" role="group" aria-label="Breadth of suggestions">
                 {BREADTH.map((b, i) => (
                   <button key={b.label} type="button" aria-pressed={tangentsFor(graph.spread) === i}
@@ -521,7 +688,9 @@ export default function App() {
 
       <div className="body">
         <main
-          className={`stage${dragging ? ' dragging' : ''}`}
+          ref={stageRef}
+          className={`stage${dragging ? ' dragging' : ''}${wheeling ? ' wheeling' : ''}`}
+          onDoubleClick={(e) => { if (graph && !(e.target as HTMLElement).closest('.card-wrap, .home, .minimap')) { setZoom(1); setPan({ x: 0, y: 0 }) } }}
           aria-label="Graph. Press Space to go deeper."
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         >
@@ -581,7 +750,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="camera" style={{ transform: `translate(${pan.x - view.pos[graph.active].x}px, ${pan.y - view.pos[graph.active].y}px)` }}>
+            <div className="camera" style={{ transform: `translate(${pan.x - zoom * view.pos[graph.active].x}px, ${pan.y - zoom * view.pos[graph.active].y}px) scale(${zoom})` }}>
               {view.rail.map((r) => <div key={r.depth} className="rail" style={{ left: r.x, top: r.y }}><b>{r.name}</b><span>{r.count}</span></div>)}
               {view.edges.map((e) => <div key={e.id} className="edge" style={e.style} />)}
               {view.skeletons.map((k) => (
@@ -591,7 +760,7 @@ export default function App() {
               ))}
               {view.cards.map((c) => (
                 <div key={c.n.id} className="card-wrap" style={c.wrap}>
-                  <button type="button" className={c.cls} style={c.style} onClick={() => select(c.n.id)} aria-label={c.aria}>
+                  <button type="button" className={c.cls} data-id={c.n.id} style={c.style} onClick={() => select(c.n.id)} onPointerEnter={() => hoverGhost(c.n.id, c.cls.includes('is-ghost'))} onPointerLeave={() => window.clearTimeout(hoverTimer.current)} aria-label={c.aria}>
                     {c.aspect && <svg className="shape" viewBox="0 0 120 120" aria-hidden="true"><path d={c.n.label.length % 2 ? BURST : CLOVER} /></svg>}
                     {c.tag && <span className={`tag${c.busy ? ' pulse' : ''}`} style={{ color: c.tagColor }}>{c.tag}</span>}
                     {c.badge && <span className="card-badge" title={c.badge === 'AI' ? 'Suggested by the AI model, not found on Wikipedia' : 'Found on the web, not on Wikipedia'}>{c.badge}</span>}
@@ -604,6 +773,12 @@ export default function App() {
                 </div>
               ))}
             </div>
+          )}
+          {mini && (
+            <svg className="minimap" width="160" height="110" viewBox="0 0 160 110" aria-hidden="true" onPointerDown={onMiniClick}>
+              {mini.dots.map((d) => <rect key={d.id} x={d.x} y={d.y} width="4" height="3" fill={d.hot ? 'var(--path)' : 'var(--muted)'} />)}
+              <rect x={mini.box.x} y={mini.box.y} width={mini.box.w} height={mini.box.h} fill="none" stroke="var(--active)" strokeWidth="1" />
+            </svg>
           )}
         </main>
 
@@ -632,7 +807,7 @@ export default function App() {
             {tab === 'read' && a.ref ? <Reader title={a.ref} onBranch={branch} onGraph={onGraph} /> : (<>
             <form className="steer" onSubmit={steer}>
               <label className="sr-only" htmlFor="steer">Narrow this node with your own words</label>
-              <input id="steer" className="field" placeholder={a.steer ? 'Narrow it differently' : `Narrow ${a.label}: a kind, an era, a place`} value={steerText} onChange={(e) => setSteerText(e.target.value)} />
+              <input id="steer" ref={steerRef} className="field" placeholder={a.steer ? 'Narrow it differently' : `Narrow ${a.label}: a kind, an era, a place`} value={steerText} onChange={(e) => setSteerText(e.target.value)} />
               <button type="submit" className="btn" disabled={!steerText.trim()}>Steer</button>
             </form>
 
@@ -740,6 +915,17 @@ export default function App() {
           </div>
         </div>
       )}
+      <dialog ref={keysRef} className="keys" aria-labelledby="keys-title">
+        <div className="dialog-head">
+          <h2 id="keys-title">Keyboard shortcuts</h2>
+          <button type="button" className="btn" onClick={() => keysRef.current?.close()}>Close</button>
+        </div>
+        <dl>
+          {([['↓ ↑', 'Move between suggestions'], ['→ or Space', 'Go deeper'], ['←', 'Go up'], ['Enter', 'Open the focused card'], ['X or Delete', 'Dismiss the focused card'], ['R', 'Re-roll'], ['S', 'Steer'], ['F', 'Fit the path on screen'], ['⌘Z / Ctrl+Z', 'Undo'], ['?', 'Show or hide this list']] as const).map(([k, d]) => (
+            <Fragment key={k}><dt><kbd>{k}</kbd></dt><dd>{d}</dd></Fragment>
+          ))}
+        </dl>
+      </dialog>
     </div>
   )
 }
