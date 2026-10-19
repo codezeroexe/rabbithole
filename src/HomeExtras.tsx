@@ -92,7 +92,7 @@ const TODAY: { seed: string; hook: string }[] = [
   { seed: 'The Krakatoa eruption', hook: 'The 1883 eruption was heard thousands of kilometers away.' },
   { seed: 'Origami mathematics', hook: 'Folding paper follows rules that mathematicians have written down as axioms.' },
   { seed: 'The Rubik\'s Cube', hook: 'Invented in 1974, it has more than 43 quintillion possible positions.' },
-  { seed: 'Lake Baikal', hook: 'The deepest lake on Earth, holding about a fifth of its unfrozen fresh water.' },
+  { seed: 'Lake Baikal', hook: 'The deepest lake on Earth, holding about a fifth of the world\'s fresh surface water.' },
   { seed: 'Sundials', hook: 'Shadows told the time long before mechanical clocks.' },
   { seed: 'The Great Fire of London', hook: 'In 1666 a fire destroyed much of the medieval city.' },
   { seed: 'Pulsars', hook: 'Spinning neutron stars that sweep beams of radio waves past Earth.' },
