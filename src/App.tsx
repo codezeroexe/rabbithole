@@ -6,8 +6,8 @@ import {
   COLUMN, newGraph, pathOf, relayout, shapeLayout, SKELETONS, stripCites, tangentsFor,
 } from './graph.ts'
 import type { ExpandContext, Graph, GraphNode, Layout, Research, Source, Suggestion } from './graph.ts'
-import { bridge, listProxyModels, research, searchFor, suggest } from './ai.ts'
-import type { ModelOption, Settings } from './ai.ts'
+import { bridge, research, searchFor, suggest } from './ai.ts'
+import type { Settings } from './ai.ts'
 import { mockResearch, mockSuggest } from './mock.ts'
 import { THEMES, nativeTheme } from './Settings.tsx'
 import type { Theme } from './Settings.tsx'
@@ -118,8 +118,8 @@ export default function App() {
     const t = load<string>('rh.theme', nativeTheme())
     return (t === 'dark' ? 'obsidian' : t) as Theme
   })
-  const [model, setModel] = useState<string>(() => load('rh.model', FREE))
-  const [models, setModels] = useState<ModelOption[] | null>(null)
+  // Browser: Free or Offline only (model backends run in the desktop app). Older saves may hold a model id.
+  const [model, setModel] = useState<string>(() => { const m = load<string>('rh.model', FREE); return m === OFFLINE ? OFFLINE : FREE })
   const [settings, setSettings] = useState<Settings | null>(null)
   const settingsRef = useRef<Settings | null>(null)
   const [serverError, setServerError] = useState<string | null>(null)
@@ -202,10 +202,9 @@ export default function App() {
       bridge.getSettings().then((s) => { setSettings(s); if (s.backend === OFFLINE) bridge!.openSettings() }).catch((e) => setServerError(e.message))
       return bridge.onSettingsChanged(setSettings)
     }
-    listProxyModels().then(setModels).catch((e) => setServerError(`OpenCode server not reachable (${e.message}). Run "npm run opencode" for real research; the offline demo still works.`))
   }, [])
   // Desktop app: the backend chosen in Settings. Browser: the model picked in the header.
-  // 'free' and 'offline' need no model; anything else is a model backend.
+  // 'free' and 'offline' need no model; anything else is a model backend (desktop only).
   const engine = () => (bridge ? settingsRef.current?.backend ?? FREE : modelRef.current === OFFLINE || modelRef.current === FREE ? modelRef.current : 'model')
 
   // All writes go through commit so async callbacks always build on the latest graph.
@@ -785,8 +784,6 @@ export default function App() {
             <select id="model" className="field" value={model} onChange={(e) => setModel(e.target.value)}>
               <option value={FREE}>Free: Wikipedia</option>
               <option value={OFFLINE}>Offline demo</option>
-              {models?.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-              {model !== OFFLINE && model !== FREE && models && !models.some((m) => m.value === model) && <option value={model}>{model}</option>}
             </select>
             <label className="sr-only" htmlFor="theme">Theme</label>
             <select id="theme" className="field" value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>

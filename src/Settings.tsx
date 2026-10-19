@@ -33,17 +33,11 @@ const HINTS: Record<string, string> = {
   local: 'A small model that runs inside the app: no LM Studio, Ollama or key. Download one once (it then works offline); web research uses keyless Wikipedia search.',
   free: 'Suggestions and notes come straight from Wikipedia: real, on-topic articles, no key and no model. For a light local model instead, use Ollama with a small one such as qwen2.5:0.5b or llama3.2:1b.',
   offline: 'Canned demo data about cars. Nothing leaves this computer.',
-  anthropic: 'Claude models. Get a key at console.anthropic.com.',
-  openai: 'Get a key at platform.openai.com.',
-  gemini: 'Get a key at aistudio.google.com.',
-  openrouter: 'One key for hundreds of models, some of them free. Get one at openrouter.ai.',
   ollama: 'Free and private. Install Ollama, run "ollama pull <model>", then load models here.',
   lmstudio: 'Free and private. Start the local server in LM Studio, then load models here.',
-  custom: 'Any server with an OpenAI-style /chat/completions endpoint.',
-  opencode: 'Uses the providers you set up in OpenCode. The app starts OpenCode for you; it must be installed (opencode.ai).',
 }
 
-// "provider/model" ids (OpenCode, OpenRouter) are grouped by provider; plain ids go in one group.
+// "provider/model" ids are grouped by provider; plain ids (Ollama, LM Studio) go in one group.
 function groupModels(ids: string[]): [string, string[]][] {
   const groups = new Map<string, string[]>()
   for (const id of ids) {
@@ -304,8 +298,6 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
   const [models, setModels] = useState(initial.models)
   const [urls, setUrls] = useState(initial.urls)
   const [search, setSearch] = useState(initial.search)
-  const [keys, setKeys] = useState<Record<string, string>>({}) // only keys typed here
-  const [removed, setRemoved] = useState<Set<string>>(new Set())
   const [options, setOptions] = useState<string[]>([])
   const [status, setStatus] = useState<{ kind: 'muted' | 'error' | 'ok'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -317,22 +309,16 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
   const info = initial.backends.find((b) => b.id === backend)!
   // Load the model list whenever the backend changes and it can be reached without typing anything.
   useEffect(() => {
-    if (backend === 'offline' || backend === 'free' || backend === 'local' || (info.key === true && !initial.keysSet[backend])) return
+    if (backend === 'offline' || backend === 'free' || backend === 'local') return
     loadModels()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend])
-  const keySet = (name: string) => !removed.has(name) && (!!keys[name] || !!initial.keysSet[name])
   const model = models[backend] ?? info.defaultModel
 
   // Save first, so loading models and testing use what is on screen.
   const persist = async () => {
-    const secrets: Record<string, string | undefined> = {}
-    for (const name of removed) secrets[name] = ''
-    for (const [name, v] of Object.entries(keys)) if (v.trim()) secrets[name] = v.trim()
-    const s = await bridge!.setSettings({ backend, search, models: { ...models, [backend]: model }, urls }, secrets)
+    const s = await bridge!.setSettings({ backend, search, models: { ...models, [backend]: model }, urls })
     onSaved(s)
-    setKeys({})
-    setRemoved(new Set())
     return s
   }
   const run = async (label: string, fn: () => Promise<string>, kind: 'muted' | 'ok' = 'muted') => {
@@ -361,15 +347,6 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
   }, 'ok')
   const save = (e: FormEvent) => { e.preventDefault(); run('Saving', async () => { await persist(); return 'Saved.' }, 'ok') }
 
-  const keyRow = (name: string, label: string) => (
-    <Row label={label} htmlFor={`key-${name}`}>
-      <input id={`key-${name}`} type="password" className="field" autoComplete="off"
-        placeholder={keySet(name) ? 'Saved. Type to replace it.' : 'Paste your key'}
-        value={keys[name] ?? ''} onChange={(e) => setKeys((k) => ({ ...k, [name]: e.target.value }))} />
-      {keySet(name) && <button type="button" className="btn" onClick={() => { setRemoved((r) => new Set(r).add(name)); setKeys((k) => ({ ...k, [name]: '' })) }}>Remove</button>}
-    </Row>
-  )
-
   return (
     <form className="research-form" onSubmit={save}>
       <Group title="Suggestions and notes" foot={HINTS[backend]}>
@@ -384,7 +361,6 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
               onChange={(e) => setUrls((u) => ({ ...u, [backend]: e.target.value }))} />
           </Row>
         )}
-        {info.key && keyRow(backend, info.key === 'optional' ? 'API key (optional)' : 'API key')}
         {backend === 'local' && (
           <Row label="Model" htmlFor="local-model" hint={progress !== null ? <progress value={progress} max={1} aria-label="Download progress" /> : undefined}>
             <select id="local-model" className="field" value={model} onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))}>
@@ -411,7 +387,7 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
                 ))}
               </select>
             ) : (
-              <input id="model-name" className="field" value={model} placeholder={backend === 'opencode' ? 'provider/model' : 'Model name'}
+              <input id="model-name" className="field" value={model} placeholder="Model name"
                 onChange={(e) => setModels((m) => ({ ...m, [backend]: e.target.value }))} />
             )}
             <button type="button" className="btn" onClick={options.length ? () => setOptions([]) : loadModels} disabled={busy}>{options.length ? 'Type a name' : 'Load models'}</button>
@@ -427,11 +403,9 @@ function Research({ initial, onSaved }: { initial: Settings; onSaved: (s: Settin
             {initial.searchProviders.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
         </Row>
-        {search !== 'none' && search !== 'wikipedia' && search !== 'web' && keyRow(search, `${initial.searchProviders.find((p) => p.id === search)?.label} API key`)}
       </Group>
 
-      {!initial.encryption && <p className="error">This system has no secure key storage, so API keys cannot be saved.</p>}
-      <p className="group-foot">Keys are encrypted with your system keychain and stay on this computer. Each is sent only to the provider it belongs to.</p>
+      <p className="group-foot">Every backend here is free and needs no key or account.</p>
 
       <div className="settings-actions">
         {status && <p className={`grow ${status.kind}`} role="status">{status.text}</p>}

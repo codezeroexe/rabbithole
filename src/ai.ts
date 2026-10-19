@@ -1,20 +1,17 @@
 // Prompts and reply parsing. The transport is the desktop app's main process (window.rh), which
-// holds the keys and talks to the chosen backend. In a plain browser (npm run dev without
-// Electron) it falls back to an OpenCode server behind the Vite proxy at /oc.
+// talks to the chosen backend. Every backend is free; a plain browser has the Wikipedia engine only.
 import type { ExpandContext, Fact, Research, Source, Suggestion } from './graph.ts'
 import { wikiSearch } from './wiki.ts'
 
-export type BackendInfo = { id: string; label: string; key: boolean | 'optional'; editableUrl: boolean; defaultModel: string }
+export type BackendInfo = { id: string; label: string; editableUrl: boolean; defaultModel: string }
 export type Settings = {
   backend: string
   models: Record<string, string>
   urls: Record<string, string>
   search: string
   appearance?: 'system' | 'light' | 'dark'
-  keysSet: Record<string, boolean>
   backends: BackendInfo[]
   searchProviders: { id: string; label: string }[]
-  encryption: boolean
 }
 export type SearchResult = { title: string; url: string; snippet: string }
 export type NewsItem = { title: string; url: string; source: string; date: string }
@@ -23,7 +20,7 @@ export type LocalModel = { id: string; label: string; size: string; downloaded: 
 type Bridge = {
   platform: string
   getSettings(): Promise<Settings>
-  setSettings(patch: Partial<Pick<Settings, 'backend' | 'search' | 'models' | 'urls' | 'appearance'>>, secrets?: Record<string, string | undefined>): Promise<Settings>
+  setSettings(patch: Partial<Pick<Settings, 'backend' | 'search' | 'models' | 'urls' | 'appearance'>>): Promise<Settings>
   listModels(backend: string): Promise<string[]>
   complete(prompt: string, schema?: object): Promise<string>
   search(query: string): Promise<SearchResult[]>
@@ -39,41 +36,12 @@ type Bridge = {
 }
 export const bridge = (globalThis as unknown as { rh?: Bridge }).rh
 
-// ---------- Browser-only fallback: OpenCode through the Vite proxy ----------
-const BASE = '/oc'
-export type ModelOption = { value: string; label: string }
-export const parseModel = (v: string) => {
-  const i = v.indexOf('/')
-  return i > 0 ? { providerID: v.slice(0, i), modelID: v.slice(i + 1) } : null
-}
-export async function listProxyModels(): Promise<ModelOption[]> {
-  const r = await fetch(`${BASE}/config/providers`)
-  if (!r.ok) throw new Error(`OpenCode server answered ${r.status}`)
-  const d = await r.json()
-  return (d.providers ?? []).flatMap((p: { id: string; name?: string; models?: object }) =>
-    Object.keys(p.models ?? {}).map((id) => ({ value: `${p.id}/${id}`, label: `${p.name ?? p.id} · ${id}` })))
-}
-async function proxyComplete(model: string, prompt: string): Promise<string> {
-  const m = parseModel(model)
-  if (!m) throw new Error('Pick a model.')
-  const post = async (path: string, body: unknown) => {
-    const r = await fetch(BASE + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    if (!r.ok) throw new Error(`OpenCode server answered ${r.status}`)
-    return r.json()
-  }
-  const s = await post('/session', { title: 'rabbithole' })
-  try {
-    const d = await post(`/session/${s.id}/message`, { agent: 'rabbithole', model: m, parts: [{ type: 'text', text: prompt }] })
-    if (d.info?.error) throw new Error(d.info.error.data?.message ?? d.info.error.name)
-    return (d.parts ?? []).filter((p: { type: string }) => p.type === 'text').map((p: { text: string }) => p.text).join('\n')
-  } finally {
-    fetch(`${BASE}/session/${s.id}`, { method: 'DELETE' }).catch(() => {})
-  }
-}
-
-// `model` only matters for the browser fallback; the desktop app uses its saved settings.
+// `model` is kept for the call sites; the desktop app uses its saved settings.
 // schema: the reply's JSON shape. The built-in model is held to it token by token; other backends ignore it.
-const complete = (model: string, prompt: string, schema?: object) => (bridge ? bridge.complete(prompt, schema) : proxyComplete(model, prompt))
+const complete = (_model: string, prompt: string, schema?: object) => {
+  if (!bridge) throw new Error('Model backends need the desktop app. Pick Free: Wikipedia here.')
+  return bridge.complete(prompt, schema)
+}
 
 // Pull the first JSON object out of a model reply, tolerating prose and ``` fences around it.
 export function extractJson(text: string): unknown {
@@ -187,7 +155,6 @@ export function parseResearch(text: string, label: string, results: SearchResult
 export async function searchFor(q: string, search: string): Promise<SearchResult[]> {
   if (search === 'none') return []
   if (search === 'wikipedia' || !bridge) return wikiSearch(q).catch(() => [])
-  if (search !== 'web') return bridge.search(q)
   const [web, wiki] = await Promise.all([bridge.search(q).catch(() => []), wikiSearch(q, 2).catch(() => [])])
   const seen = new Set(web.map((r) => r.url))
   return [...web.slice(0, 5), ...wiki.filter((r) => !seen.has(r.url))]

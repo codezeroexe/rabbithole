@@ -1,59 +1,43 @@
-// Electron main process: the window, settings and secrets, and every call to a model backend.
-// Prompts and parsing live in the renderer (src/ai.ts); this file only moves text in and out,
-// so API keys never reach the page.
-const { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme, safeStorage, shell } = require('electron')
-const { spawn } = require('node:child_process')
+// Electron main process: the window, settings, and every call to a model backend or web search.
+// Prompts and parsing live in the renderer (src/ai.ts); this file only moves text in and out.
+// Every backend is free: no API keys, no accounts.
+const { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme, shell } = require('electron')
 const fs = require('node:fs')
-const net = require('node:net')
-const os = require('node:os')
 const path = require('node:path')
-const Anthropic = require('@anthropic-ai/sdk').default
 
 const SYSTEM = 'You are the research engine of Rabbithole, a graph explorer for deep dives. Answer with one JSON object only: no prose, no markdown fences.'
 const TIMEOUT_MS = 300_000
 
-// Every backend the settings screen offers. OpenAI-compatible ones share one code path.
+// Every backend the settings screen offers: all free. Ollama and LM Studio share the OpenAI-style path.
 const BACKENDS = {
   free: { label: 'Free: Wikipedia (no key, no model)' },
   offline: { label: 'Offline demo' },
   local: { label: 'Built-in tiny model (no install)', defaultModel: 'qwen3-0.6b' },
-  anthropic: { label: 'Anthropic (Claude)', key: true, defaultModel: 'claude-opus-5-5' },
-  openai: { label: 'OpenAI', key: true, baseUrl: 'https://api.openai.com/v1' },
-  gemini: { label: 'Google Gemini', key: true, baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
-  openrouter: { label: 'OpenRouter', key: true, baseUrl: 'https://openrouter.ai/api/v1' },
   ollama: { label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', editableUrl: true },
   lmstudio: { label: 'LM Studio (local)', baseUrl: 'http://localhost:1234/v1', editableUrl: true },
-  custom: { label: 'Custom OpenAI-compatible', key: 'optional', baseUrl: '', editableUrl: true },
-  opencode: { label: 'OpenCode' },
 }
-// wikipedia is searched from the renderer (public API, no key); the others need a key and run here.
-const SEARCH = { web: 'Web: Bing + DuckDuckGo + Google News, pages read (free, no key)', wikipedia: 'Wikipedia only (free, no key)', none: 'No web search', tavily: 'Tavily', brave: 'Brave Search' }
+// wikipedia is searched from the renderer (public API); web runs here.
+const SEARCH = { web: 'Web: Bing + DuckDuckGo + Google News, pages read (free, no key)', wikipedia: 'Wikipedia only (free, no key)', none: 'No web search' }
 
-// ---------- Settings (secrets encrypted with the OS keychain via safeStorage) ----------
+// ---------- Settings ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
-let settings = { backend: 'free', models: {}, urls: {}, search: 'web', appearance: 'system', secrets: {} }
+let settings = { backend: 'free', models: {}, urls: {}, search: 'web', appearance: 'system' }
 
 function loadSettings() {
   try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) } } catch { /* first run */ }
+  // Older versions offered paid backends and keyed search, and stored their keys here: drop them.
+  if (!BACKENDS[settings.backend]) settings.backend = 'free'
+  if (!SEARCH[settings.search]) settings.search = 'web'
+  if (settings.secrets) { delete settings.secrets; try { saveSettings() } catch { /* read-only: retried on next save */ } }
 }
 function saveSettings() {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true })
   fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2), { mode: 0o600 })
 }
-function setSecret(name, value) {
-  if (!value) { delete settings.secrets[name]; return }
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('This system has no secure storage, so the key cannot be saved.')
-  settings.secrets[name] = safeStorage.encryptString(value).toString('base64')
-}
-function getSecret(name) {
-  const v = settings.secrets[name]
-  if (!v) return ''
-  try { return safeStorage.decryptString(Buffer.from(v, 'base64')) } catch { return '' }
-}
 const baseUrlFor = (b) => (settings.urls[b] || BACKENDS[b].baseUrl || '').replace(/\/+$/, '')
 const modelFor = (b) => settings.models[b] || BACKENDS[b].defaultModel || ''
 
-// What the renderer may see: never the secrets themselves, only whether each is set.
+// What the renderer sees.
 function publicSettings() {
   return {
     backend: settings.backend,
@@ -61,10 +45,8 @@ function publicSettings() {
     urls: Object.fromEntries(Object.keys(BACKENDS).map((b) => [b, baseUrlFor(b)])),
     search: settings.search,
     appearance: settings.appearance,
-    keysSet: Object.fromEntries(Object.keys(settings.secrets).map((k) => [k, true])),
-    backends: Object.entries(BACKENDS).map(([id, b]) => ({ id, label: b.label, key: b.key ?? false, editableUrl: !!b.editableUrl, defaultModel: b.defaultModel ?? '' })),
+    backends: Object.entries(BACKENDS).map(([id, b]) => ({ id, label: b.label, editableUrl: !!b.editableUrl, defaultModel: b.defaultModel ?? '' })),
     searchProviders: Object.entries(SEARCH).map(([id, label]) => ({ id, label })),
-    encryption: safeStorage.isEncryptionAvailable(),
   }
 }
 
@@ -87,45 +69,8 @@ async function fetchJson(url, init = {}) {
   }
 }
 
-// ---------- Anthropic ----------
-const FALLBACK_MODELS = new Set(['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5'])
-function anthropicClient() {
-  const apiKey = getSecret('anthropic')
-  if (!apiKey) throw new Error('Add your Anthropic API key in Settings.')
-  return new Anthropic({ apiKey, timeout: TIMEOUT_MS })
-}
-async function anthropicComplete(prompt) {
-  const client = anthropicClient()
-  const model = modelFor('anthropic')
-  const params = {
-    model,
-    max_tokens: 16000,
-    system: SYSTEM,
-    output_config: { effort: 'low' }, // short structured answers: speed matters more than depth
-    messages: [{ role: 'user', content: prompt }],
-  }
-  // Server-side fallback on a refusal, where the model supports it.
-  const res = FALLBACK_MODELS.has(model)
-    ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
-    : await client.messages.create(params)
-  if (res.stop_reason === 'refusal') throw new Error('The model declined this request.')
-  return res.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
-}
-async function anthropicModels() {
-  const out = []
-  for await (const m of anthropicClient().models.list()) out.push(m.id)
-  return out
-}
-
-// ---------- OpenAI-compatible (OpenAI, Gemini, OpenRouter, Ollama, LM Studio, custom) ----------
-function compatHeaders(b) {
-  const key = getSecret(b)
-  if (BACKENDS[b].key === true && !key) throw new Error(`Add your ${BACKENDS[b].label} API key in Settings.`)
-  const h = { 'content-type': 'application/json' }
-  if (key) h.authorization = `Bearer ${key}`
-  if (b === 'openrouter') { h['HTTP-Referer'] = 'https://github.com/rabbithole-app'; h['X-Title'] = 'Rabbithole' }
-  return h
-}
+// ---------- OpenAI-style local servers (Ollama, LM Studio) ----------
+const JSON_HEADERS = { 'content-type': 'application/json' }
 async function compatComplete(b, prompt) {
   const base = baseUrlFor(b)
   if (!base) throw new Error('Set the server URL in Settings.')
@@ -133,7 +78,7 @@ async function compatComplete(b, prompt) {
   if (!model) throw new Error('Pick a model in Settings.')
   const d = await fetchJson(`${base}/chat/completions`, {
     method: 'POST',
-    headers: compatHeaders(b),
+    headers: JSON_HEADERS,
     body: JSON.stringify({ model, messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }] }),
   })
   const text = d.choices?.[0]?.message?.content
@@ -141,77 +86,8 @@ async function compatComplete(b, prompt) {
   return text
 }
 async function compatModels(b) {
-  const d = await fetchJson(`${baseUrlFor(b)}/models`, { headers: compatHeaders(b) })
+  const d = await fetchJson(`${baseUrlFor(b)}/models`, { headers: JSON_HEADERS })
   return (d.data ?? []).map((m) => m.id).sort()
-}
-
-// ---------- OpenCode: started on demand, stopped when the app quits ----------
-let oc = null // { proc, url, ready }
-const ocPath = () => {
-  const extra = os.platform() === 'win32'
-    ? [path.join(process.env.APPDATA ?? '', 'npm'), path.join(os.homedir(), '.opencode', 'bin')]
-    : ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.opencode', 'bin'), path.join(os.homedir(), '.bun', 'bin'), path.join(os.homedir(), '.local', 'bin')]
-  return [process.env.PATH, ...extra].filter(Boolean).join(path.delimiter)
-}
-const freePort = () => new Promise((resolve, reject) => {
-  const s = net.createServer()
-  s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)) })
-  s.on('error', reject)
-})
-function startOpencode() {
-  if (oc) return oc.ready
-  const dir = path.join(app.getPath('userData'), 'opencode')
-  fs.mkdirSync(dir, { recursive: true })
-  // The bundled agent config: a short JSON-only prompt with every tool switched off.
-  fs.copyFileSync(path.join(__dirname, '..', 'opencode.json'), path.join(dir, 'opencode.json'))
-  oc = { proc: null, url: '', ready: null }
-  oc.ready = (async () => {
-    const port = await freePort()
-    const proc = spawn('opencode', ['serve', '--pure', '--port', String(port)], {
-      cwd: dir, env: { ...process.env, PATH: ocPath() }, shell: os.platform() === 'win32', windowsHide: true,
-      stdio: 'ignore', // unread pipes fill up and stall the server
-    })
-    oc.proc = proc
-    oc.url = `http://127.0.0.1:${port}`
-    let failed = null
-    proc.on('error', (e) => { failed = e.code === 'ENOENT' ? new Error('OpenCode is not installed, or not on PATH. Install it from opencode.ai, then try again.') : e })
-    proc.on('exit', () => { oc = null })
-    for (let i = 0; i < 60; i++) {
-      if (failed) throw failed
-      try { await fetchJson(`${oc.url}/config`); return oc.url } catch { await new Promise((r) => setTimeout(r, 500)) }
-    }
-    stopOpencode()
-    throw new Error('OpenCode did not start within 30 s.')
-  })()
-  oc.ready.catch(() => { oc = null })
-  return oc.ready
-}
-function stopOpencode() { if (oc?.proc) oc.proc.kill(); oc = null }
-
-async function opencodeComplete(prompt) {
-  const url = await startOpencode()
-  const [providerID, ...rest] = modelFor('opencode').split('/')
-  if (!rest.length) throw new Error('Pick an OpenCode model in Settings.')
-  const post = (p, body) => fetchJson(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-  const session = await post('/session', { title: 'rabbithole' })
-  try {
-    const d = await post(`/session/${session.id}/message`, { agent: 'rabbithole', model: { providerID, modelID: rest.join('/') }, parts: [{ type: 'text', text: prompt }] })
-    const err = d.info?.error
-    if (err) {
-      const msg = err.data?.message ?? err.name ?? 'The model call failed.'
-      if (/free tier/i.test(msg)) throw new Error(`OpenCode's free models (${providerID}/${rest.join('/')}) only work inside the OpenCode app itself. In Settings, pick a model from another provider you have set up in OpenCode.`)
-      if (/key has expired|invalid api key|unauthorized/i.test(msg)) throw new Error(`OpenCode's key for "${providerID}" was rejected: ${msg} Renew it in OpenCode, or pick another provider's model in Settings.`)
-      throw new Error(msg)
-    }
-    return (d.parts ?? []).filter((p) => p.type === 'text').map((p) => p.text).join('\n')
-  } finally {
-    fetch(`${url}/session/${session.id}`, { method: 'DELETE' }).catch(() => {}) // the graph is the memory, not the chat
-  }
-}
-async function opencodeModels() {
-  const url = await startOpencode()
-  const d = await fetchJson(`${url}/config/providers`)
-  return (d.providers ?? []).flatMap((p) => Object.keys(p.models ?? {}).map((m) => `${p.id}/${m}`))
 }
 
 // ---------- Built-in tiny model (llama.cpp via node-llama-cpp) ----------
@@ -274,10 +150,9 @@ function tryGetSequence(context) {
   try { return context.sequencesLeft > 0 ? context.getSequence() : null } catch { return null }
 }
 
-// ---------- Web search add-on ----------
 // ---------- Keyless web search: DuckDuckGo's HTML results, then the top pages read as text ----------
-// ponytail: scrapes DuckDuckGo's no-JS page; if it starts asking for a captcha, research falls back
-// to Wikipedia. Upgrade path: a Brave or Tavily key in Settings.
+// ponytail: scrapes DuckDuckGo's no-JS page; if it starts asking for a captcha, Bing's RSS still answers
+// and research falls back to Wikipedia.
 const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36'
 const decode = (s) => s.replace(/<[^>]+>/g, '').replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
 async function ddgSearch(query, n = 6) {
@@ -347,34 +222,17 @@ async function webSearch(query) {
     const texts = await Promise.all(results.slice(0, 3).map((r) => readPage(r.url)))
     return results.map((r, i) => ({ ...r, snippet: [r.snippet, texts[i]].filter(Boolean).join(' ').slice(0, 1600) }))
   }
-  const key = getSecret(settings.search)
-  if (settings.search === 'none' || settings.search === 'wikipedia') return []
-  if (!key) throw new Error(`Add your ${SEARCH[settings.search]} API key in Settings.`)
-  if (settings.search === 'tavily') {
-    const d = await fetchJson('https://api.tavily.com/search', {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({ query, max_results: 5 }),
-    })
-    return (d.results ?? []).map((r) => ({ title: r.title, url: r.url, snippet: (r.content ?? '').slice(0, 600) }))
-  }
-  const d = await fetchJson(`https://api.search.brave.com/res/v1/web/search?count=5&q=${encodeURIComponent(query)}`, {
-    headers: { accept: 'application/json', 'X-Subscription-Token': key },
-  })
-  return (d.web?.results ?? []).map((r) => ({ title: r.title, url: r.url, snippet: (r.description ?? '').replace(/<[^>]+>/g, '').slice(0, 600) }))
+  return []
 }
 
 // ---------- IPC ----------
 function complete(prompt, schema) {
   const b = settings.backend
-  if (b === 'anthropic') return anthropicComplete(prompt)
-  if (b === 'opencode') return opencodeComplete(prompt)
   if (b === 'local') return localComplete(prompt, schema)
   if (BACKENDS[b]?.baseUrl !== undefined) return compatComplete(b, prompt)
   throw new Error('Pick a backend in Settings.')
 }
 function listModels(b) {
-  if (b === 'anthropic') return anthropicModels()
-  if (b === 'opencode') return opencodeModels()
   if (b === 'local') return Promise.resolve(Object.keys(LOCAL))
   if (BACKENDS[b]?.baseUrl !== undefined) return compatModels(b)
   return Promise.resolve([])
@@ -385,14 +243,13 @@ const handle = (channel, fn) => ipcMain.handle(channel, async (_e, ...args) => {
 })
 
 handle('settings:get', () => publicSettings())
-handle('settings:set', (patch, secrets) => {
-  for (const k of ['backend', 'search']) if (typeof patch?.[k] === 'string') settings[k] = patch[k]
+handle('settings:set', (patch) => {
+  if (BACKENDS[patch?.backend]) settings.backend = patch.backend
+  if (SEARCH[patch?.search]) settings.search = patch.search
   // Light, Dark or System: nativeTheme drives prefers-color-scheme in every window and the native materials.
   if (['system', 'light', 'dark'].includes(patch?.appearance)) nativeTheme.themeSource = settings.appearance = patch.appearance
   if (patch?.models) Object.assign(settings.models, patch.models)
   if (patch?.urls) Object.assign(settings.urls, patch.urls)
-  for (const [name, value] of Object.entries(secrets ?? {})) if (value !== undefined) setSecret(name, value)
-  if (settings.backend !== 'opencode') stopOpencode()
   saveSettings()
   // The Settings window and the main window each hold a copy; keep them in step.
   for (const w of BrowserWindow.getAllWindows()) w.webContents.send('settings:changed', publicSettings())
@@ -543,4 +400,3 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (!mainWin) createWindow() })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('before-quit', stopOpencode)
