@@ -17,6 +17,7 @@ import { applyGlass, BREADTH, MOD, prefs, setPrefs, SHORTCUTS } from './prefs.ts
 import { forgetCache } from './net.ts'
 import { applyCustom } from './custom.ts'
 import { chime } from './sound.ts'
+import { applyDockIcon } from './dockIcon.ts'
 import { applyM3, BURST, CLOVER, DEFAULT_SEED } from './m3.ts'
 
 // Four steps, one per number of tangents (0 to 3) among the 4 suggestions.
@@ -35,6 +36,8 @@ const fadeCrumbs = (el: HTMLElement) => {
   el.style.setProperty('--fade-l', el.scrollLeft > 1 ? '20px' : '0px')
   el.style.setProperty('--fade-r', el.scrollLeft + el.clientWidth < el.scrollWidth - 1 ? '20px' : '0px')
 }
+const DIVE_ICONS = ['🐇', '🚀', '🧠', '🎵', '🎨', '📚', '🧪', '🌍', '🏛️', '🐙', '⚙️', '🎮', '🍳', '⚽', '🌌', '💡']
+const DIVE_COLORS = ['#0A84FF', '#30B0C7', '#34C759', '#FF9F0A', '#FF375F', '#BF5AF2', '#8E8E93', '#C96442']
 const clone = (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n) => ({ ...n })), notes: { ...g.notes }, visits: g.visits && [...g.visits] })
 let reqSeq = 1
 
@@ -152,7 +155,7 @@ export default function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; save('rh.theme', theme); bridge?.setMenuState({ theme }).catch(() => {}) }, [theme])
   // Material 3: the seed color from Settings drives every color role; Settings saves it, this window follows.
   const [seed, setSeed] = useState(() => load('rh.seed', DEFAULT_SEED))
-  useEffect(() => { applyM3(theme, seed); applyCustom() }, [theme, seed])
+  useEffect(() => { applyM3(theme, seed); applyCustom(); applyDockIcon() }, [theme, seed])
   useEffect(() => { applyGlass(); applyCustom() }, [])
   // Bumped when Settings changes a pref, so anything that reads prefs() while rendering redraws.
   const [prefsTick, setPrefsTick] = useState(0)
@@ -161,7 +164,7 @@ export default function App() {
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'rh.seed' && e.newValue) setSeed(JSON.parse(e.newValue))
-      if (e.key === 'rh.prefs') { applyGlass(); applyCustom(); setPrefsTick((t) => t + 1) }
+      if (e.key === 'rh.prefs') { applyGlass(); applyCustom(); applyDockIcon(); setPrefsTick((t) => t + 1) }
       // The Settings window changed the saved dives or emptied the cache.
       if (e.key === 'rh.request' && e.newValue) requestRef.current(JSON.parse(e.newValue).type)
     }
@@ -174,8 +177,19 @@ export default function App() {
   // The dive on screen joins the others at the top of the list; in-flight markers are dropped so a
   // reopened dive never looks stuck loading.
   const allDives = useMemo(() => (graph && diveId
-    ? [{ id: diveId, updated: graph.updated ?? 0, graph: { ...graph, nodes: graph.nodes.map(({ loading: _l, researching: _r, ...n }) => n) } }, ...dives.filter((d) => d.id !== diveId)]
+    ? [{ id: diveId, updated: graph.updated ?? 0, icon: dives.find((d) => d.id === diveId)?.icon, color: dives.find((d) => d.id === diveId)?.color, graph: { ...graph, nodes: graph.nodes.map(({ loading: _l, researching: _r, ...n }) => n) } }, ...dives.filter((d) => d.id !== diveId)]
     : dives), [graph, diveId, dives])
+  // Icon / color popover: which dive's is open. Escape or a click outside closes it; focus goes back to its button.
+  const [custom, setCustom] = useState<string | null>(null)
+  const closeCustom = () => { const id = custom; setCustom(null); document.querySelector<HTMLElement>(`.dive-more[data-dive="${id}"]`)?.focus() }
+  useEffect(() => {
+    if (!custom) return
+    const off = (e: PointerEvent) => { if (!(e.target as Element).closest('.dive-pop, .dive-more')) setCustom(null) }
+    document.addEventListener('pointerdown', off)
+    return () => document.removeEventListener('pointerdown', off)
+  }, [custom])
+  // allDives already holds the open dive, so this adds it to dives if it is not there yet.
+  const paintDive = (id: string, patch: { icon?: string; color?: string }) => setDives(allDives.map((d) => (d.id === id ? { ...d, ...patch } : d)))
   useEffect(() => { save('rh.dives', allDives); save('rh.dive', diveId) }, [allDives, diveId])
   useEffect(() => { settingsRef.current = settings }, [settings])
   useEffect(() => {
@@ -694,14 +708,25 @@ export default function App() {
         {recent.length > 0 && <h2 className="side-h">Recent dives</h2>}
         <ul className="side-list">
           {recent.map((d) => (
-            <li key={d.id}>
+            <li key={d.id} className="dive-row">
               <button type="button" className={`nav-item${d.id === diveId ? ' on' : ''}`} aria-current={d.id === diveId ? 'page' : undefined} onClick={() => openDive(d.id)}>
+                {recent.some((x) => x.icon || x.color) && (
+                  <span className="dive-mark" aria-hidden="true">{d.icon ?? (d.color && <span className="dive-dot" style={{ background: d.color }} />)}</span>
+                )}
                 <span className="grow item-text">
                   <span className="ellipsis">{d.graph.nodes[0].label}</span>
                   {/* Same seed twice reads the same; where each one got to tells them apart. */}
                   <span className="sub ellipsis">{d.graph.active !== d.graph.nodes[0].id && `${find(d.graph, d.graph.active)?.label} · `}{ago(d.updated)}</span>
                 </span>
               </button>
+              <button type="button" className="dive-more" data-dive={d.id} aria-label={`Customize ${d.graph.nodes[0].label}`} aria-haspopup="dialog" aria-expanded={custom === d.id} onClick={() => setCustom(custom === d.id ? null : d.id)}>…</button>
+              {custom === d.id && (
+                <div className="dive-pop" role="dialog" aria-label="Dive icon and color" onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); closeCustom() } }}>
+                  <div className="dive-icons">{DIVE_ICONS.map((i) => <button key={i} type="button" className={d.icon === i ? 'on' : ''} aria-label={i} aria-pressed={d.icon === i} onClick={() => paintDive(d.id, { icon: i })}>{i}</button>)}</div>
+                  <div className="dive-colors">{DIVE_COLORS.map((c) => <button key={c} type="button" className={d.color === c ? 'on' : ''} style={{ background: c }} aria-label={c} aria-pressed={d.color === c} onClick={() => paintDive(d.id, { color: c })} />)}</div>
+                  <button type="button" className="dive-clear" onClick={() => paintDive(d.id, { icon: undefined, color: undefined })}>Clear</button>
+                </div>
+              )}
             </li>
           ))}
         </ul>

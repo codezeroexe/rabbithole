@@ -34,6 +34,7 @@ type Bridge = {
   onSettingsChanged(fn: (s: Settings) => void): () => void
   localModels(): Promise<LocalModel[]>
   downloadLocal(id: string): Promise<LocalModel[]>
+  setDockIcon?(url: string | null): Promise<void>
   onLocalProgress(fn: (id: string, progress: number) => void): () => void
 }
 export const bridge = (globalThis as unknown as { rh?: Bridge }).rh

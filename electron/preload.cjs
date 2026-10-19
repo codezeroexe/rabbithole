@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('rh', {
   setMenuState: (state) => call('menu:state', state),
   onMenu: (fn) => { const h = (_e, cmd) => fn(cmd); ipcRenderer.on('menu', h); return () => ipcRenderer.off('menu', h) },
   onSettingsChanged: (fn) => { const h = (_e, s) => fn(s); ipcRenderer.on('settings:changed', h); return () => ipcRenderer.off('settings:changed', h) },
+  setDockIcon: (url) => call('dock:icon', url),
   localModels: () => call('local:list'),
   downloadLocal: (id) => call('local:download', id),
   onLocalProgress: (fn) => { const h = (_e, id, p) => fn(id, p); ipcRenderer.on('local:progress', h); return () => ipcRenderer.off('local:progress', h) },
