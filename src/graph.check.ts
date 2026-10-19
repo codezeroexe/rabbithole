@@ -1,6 +1,6 @@
 // Run with `npm run check`. Fails loudly if the graph logic or reply parsing breaks.
 import assert from 'node:assert/strict'
-import { addGhosts, contextFor, dismissNode, exportVault, kidsOf, newGraph, relayout, steerNode } from './graph.ts'
+import { addGhosts, contextFor, dismissNode, exportVault, kidsOf, newGraph, norm, relayout, steerNode } from './graph.ts'
 import { extractJson, parseResearch, parseSuggestions } from './ai.ts'
 import { mockSuggest } from './mock.ts'
 
@@ -63,6 +63,21 @@ assert.equal(r.facts.length, 1)
 assert.equal(r.verified, true)
 // Without search, only http(s) URLs survive.
 assert.deepEqual(parseResearch('{"summary":"S","sources":[{"title":"a","url":"javascript:alert(1)"}]}', 'X', []).sources, [])
+
+// Near-duplicate labels merge: plurals, "The", and parenthesised qualifiers; "ss" endings stay.
+assert.equal(norm('The Beatles'), norm('Beatles'))
+assert.equal(norm('Ferrari (company)'), norm('Ferrari'))
+assert.equal(norm('Cars'), norm('Car'))
+assert.notEqual(norm('Glass'), norm('Glas'))
+{
+  const d = newGraph('Cars')
+  addGhosts(d, 'root', [{ label: 'Ferrari', teaser: '', tangent: false }, { label: 'Ferrari (company)', teaser: '', tangent: false }])
+  assert.equal(kidsOf(d, 'root').length, 1)
+  // Same article under two labels: one child.
+  const e = newGraph('Cars')
+  addGhosts(e, 'root', [{ label: 'Ford', teaser: '', tangent: false, ref: 'Ford Motor Company' }, { label: 'Ford Motor', teaser: '', tangent: false, ref: 'Ford Motor Company' }])
+  assert.equal(kidsOf(e, 'root').length, 1)
+}
 
 console.log('graph checks passed')
 

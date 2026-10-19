@@ -5,7 +5,8 @@ export type Fact = { k: string; v: string }
 export type Source = { title: string; url: string }
 // ref: the exact Wikipedia title a suggestion came from, when it came from Wikipedia.
 // offWiki: a real thing (from Wikidata) with no Wikipedia article yet; it is researched from the web.
-export type Suggestion = { label: string; teaser: string; tangent: boolean; ref?: string; kind?: Kind; facet?: Facet; offWiki?: boolean }
+// origin: where the branch came from. 'wiki' = a Wikipedia article, 'model' = invented by the AI model, 'web' = off-Wikipedia.
+export type Suggestion = { label: string; teaser: string; tangent: boolean; ref?: string; kind?: Kind; facet?: Facet; offWiki?: boolean; origin?: 'wiki' | 'model' | 'web' }
 // What a node is, which decides how it narrows:
 // thing:  a real article (the seed, a member of an aspect, a link from the reader). It splits into aspects.
 // aspect: one slice of the thing above it (its products, members, works). It lists its members.
@@ -35,6 +36,7 @@ export type GraphNode = {
   facet?: Facet
   steer?: string // the user's words narrowing this node ("tech brand"); applies to everything under it
   offWiki?: boolean
+  origin?: 'wiki' | 'model' | 'web' // unset on suggestions from the offline mock and on older dives
   research?: Research
   loading?: number // request id while suggestions are in flight
   researching?: number // request id while research is in flight
@@ -51,6 +53,11 @@ export type Graph = {
 let seq = 0
 export const nid = () => `n${Date.now().toString(36)}${(seq++).toString(36)}`
 const lc = (s: string) => s.toLowerCase()
+// "The Beatles" = "Beatles", "Ferrari (company)" = "Ferrari", "Cars" = "Car".
+export const norm = (s: string) =>
+  s.toLowerCase().replace(/\s+\([^)]*\)$/, '').replace(/^(the|a|an)\s+/, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, '').split(/\s+/).filter(Boolean)
+    .map((w) => (w.length > 3 ? w.replace(/(ies)$/, 'y').replace(/(?<!s)s$/, '') : w)).join(' ')
 
 export function newGraph(seed: string): Graph {
   return {
@@ -138,14 +145,16 @@ export function clearGhosts(g: Graph, pid: string) {
 
 export function addGhosts(g: Graph, pid: string, items: Suggestion[]) {
   // Articles appear once in the whole graph; aspect names ("Members") only once per node.
-  const taken = new Set(g.nodes.map((n) => lc(n.label)))
-  const siblings = new Set(kidsOf(g, pid).map((n) => lc(n.label)))
+  const taken = new Set(g.nodes.map((n) => norm(n.label)))
+  const siblings = new Set(kidsOf(g, pid).map((n) => norm(n.label)))
+  const refs = new Set(g.nodes.map((n) => n.ref).filter(Boolean))
   for (const s of items) {
     const label = s.label.trim()
-    if (!label || (s.kind === 'aspect' ? siblings : taken).has(lc(label))) continue
-    taken.add(lc(label))
-    siblings.add(lc(label))
-    g.nodes.push({ id: nid(), label, parent: pid, status: 'ghost', tangent: !!s.tangent, steered: false, rolls: 0, teaser: s.teaser, ref: s.ref, kind: s.kind, facet: s.facet, offWiki: s.offWiki })
+    if (!label || (s.kind === 'aspect' ? siblings : taken).has(norm(label)) || (s.ref && refs.has(s.ref))) continue
+    taken.add(norm(label))
+    siblings.add(norm(label))
+    if (s.ref) refs.add(s.ref)
+    g.nodes.push({ id: nid(), label, parent: pid, status: 'ghost', tangent: !!s.tangent, steered: false, rolls: 0, teaser: s.teaser, ref: s.ref, kind: s.kind, facet: s.facet, offWiki: s.offWiki, origin: s.origin })
   }
 }
 

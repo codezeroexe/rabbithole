@@ -480,7 +480,13 @@ function buildMenu() {
       { type: 'separator' },
       ...(mac ? [{ role: 'close' }] : [settingsItem, { type: 'separator' }, { role: 'quit' }]),
     ] },
-    { role: 'editMenu' },
+    { label: 'Edit', submenu: [
+      { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => send('undo') },
+      { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: () => send('redo') },
+      ...(mac ? [] : [{ label: 'Redo', accelerator: 'Ctrl+Y', visible: false, acceleratorWorksWhenHidden: true, click: () => send('redo') }]),
+      { type: 'separator' },
+      { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
     { label: 'Graph', submenu: [
       // Space also goes deeper when focus is not in a text field; menus cannot claim Space without breaking typing.
       { label: 'Go Deeper', accelerator: 'CmdOrCtrl+Down', click: () => send('deeper') },

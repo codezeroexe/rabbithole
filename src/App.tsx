@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import {
@@ -105,6 +105,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [steerText, setSteerText] = useState('')
   const [seedText, setSeedText] = useState('')
+  const [query, setQuery] = useState('')
   const [composing, setComposing] = useState(false)
   const [tab, setTab] = useState<'notes' | 'read'>('notes')
   const [exportMode, setExportMode] = useState<'md' | 'vault' | null>(null)
@@ -155,6 +156,35 @@ export default function App() {
     return next
   }, [])
 
+  // Undo history for re-roll, dismiss, steer and breadth; selection and note typing are not recorded.
+  const past = useRef<Graph[]>([])
+  const future = useRef<Graph[]>([])
+  const snapshot = () => {
+    if (!ref.current) return
+    past.current.push(clone(ref.current))
+    if (past.current.length > 30) past.current.shift()
+    future.current = []
+  }
+  // Clearing loading/researching makes in-flight replies find their request id gone and drop.
+  const restore = (g: Graph) => {
+    g.nodes.forEach((n) => { n.loading = undefined; n.researching = undefined })
+    ref.current = g
+    setGraph(g)
+    setPan({ x: 0, y: 0 })
+  }
+  const undo = () => {
+    const g = past.current.pop()
+    if (!g || !ref.current) return
+    future.current.push(clone(ref.current))
+    restore(g)
+  }
+  const redo = () => {
+    const g = future.current.pop()
+    if (!g || !ref.current) return
+    past.current.push(clone(ref.current))
+    restore(g)
+  }
+
   const expand = useCallback(async (id: string) => {
     const req = reqSeq++
     const g = commit((g) => { clearGhosts(g, id); const n = find(g, id); if (n) n.loading = req })
@@ -165,20 +195,20 @@ export default function App() {
     let ref: string | undefined
     try {
       if (kind === OFFLINE) items = mockSuggest(ctx)
-      else if (kind === FREE) ({ items, ref } = await wikiSuggest(ctx))
+      else if (kind === FREE) { const r = await wikiSuggest(ctx); items = wikiItems(r.items); ref = r.ref }
       else {
         // Ground the model in the real article so it stays on topic; carry on without it if Wikipedia is down.
         // The model picks from (and words) real articles that already fit the path.
         const h = await wikiHints(ctx).catch(() => null)
         if (h) { ref = h.ref; ctx.hints = h.pool.map((p) => p.label) }
         const byLabel = new Map((h?.pool ?? []).map((p) => [p.label.toLowerCase(), p]))
-        items = (await suggest(modelRef.current, ctx)).map((i) => { const p = byLabel.get(i.label.toLowerCase()); return p ? { ...p, teaser: i.teaser || p.teaser, tangent: i.tangent } : i })
+        items = (await suggest(modelRef.current, ctx)).map((i) => { const p = byLabel.get(i.label.toLowerCase()); return p ? { ...p, teaser: i.teaser || p.teaser, tangent: i.tangent, origin: 'wiki' } : { ...i, origin: 'model' } })
       }
     } catch (e) {
       const msg = (e as Error).message
       if (kind === FREE || kind === OFFLINE) setError(`Suggestions failed: ${msg}`)
       else {
-        try { ({ items, ref } = await wikiSuggest(ctx)); setError(`Suggestions failed: ${msg} Showing Wikipedia suggestions instead.`) }
+        try { const r = await wikiSuggest(ctx); items = wikiItems(r.items); ref = r.ref; setError(`Suggestions failed: ${msg} Showing Wikipedia suggestions instead.`) }
         catch { setError(`Suggestions failed: ${msg}`) }
       }
     }
@@ -254,6 +284,7 @@ export default function App() {
     if (!seed) return
     const g = { ...newGraph(seed), updated: Date.now() }
     morph(() => {
+      past.current = []; future.current = []
       ref.current = g
       setDiveId(`d${Date.now().toString(36)}`)
       setGraph(g)
@@ -272,6 +303,7 @@ export default function App() {
   }
   // Steering narrows the node itself and re-rolls what is under it; it never adds a node.
   const narrow = (id: string, words: string) => {
+    snapshot()
     commit((g) => steerOn(g, id, words))
     expand(id)
     doResearch(id)
@@ -286,14 +318,16 @@ export default function App() {
     select(id)
   }
 
-  const dismiss = (id: string) => commit((g) => dismissNode(g, id))
+  const dismiss = (id: string) => { snapshot(); commit((g) => dismissNode(g, id)) }
   const reroll = () => {
+    snapshot()
     const id = ref.current?.active
     if (!id) return
     commit((g) => { const n = find(g, id); if (n) n.rolls += 1 })
     expand(id)
   }
   const setSpread = (v: number) => {
+    snapshot()
     const old = ref.current?.spread ?? v
     commit((g) => { g.spread = v })
     if (tangentsFor(v) !== tangentsFor(old) && ref.current) expand(ref.current.active)
@@ -307,15 +341,17 @@ export default function App() {
   }, [select])
 
   // A new dive keeps the current one in the list; nothing is lost.
-  const goHome = (compose: boolean) => morph(() => { setDives(allDives); ref.current = null; setGraph(null); setDiveId(null); setError(null); setPan({ x: 0, y: 0 }); setComposing(compose) })
+  const goHome = (compose: boolean) => morph(() => { past.current = []; future.current = []; setDives(allDives); ref.current = null; setGraph(null); setDiveId(null); setError(null); setPan({ x: 0, y: 0 }); setComposing(compose); setQuery('') })
   const newTopic = () => goHome(true)
-  const openDive = (id: string) => {
+  const openDive = (id: string, nodeId?: string) => {
     const d = allDives.find((x) => x.id === id)
     if (!d) return newTopic()
     morph(() => {
+      past.current = []; future.current = []
       setDives(allDives)
-      ref.current = d.graph
-      setGraph(d.graph)
+      const g = nodeId && d.graph.nodes.some((n) => n.id === nodeId) ? { ...d.graph, active: nodeId } : d.graph
+      ref.current = g
+      setGraph(g)
       setDiveId(id)
       setError(null)
       setPan({ x: 0, y: 0 })
@@ -326,10 +362,13 @@ export default function App() {
     if (d && confirm(`Delete the dive "${d.graph.nodes[0].label}"? This cannot be undone.`)) setDives(allDives.filter((x) => x.id !== id))
   }
   // Commands from the native menu bar (desktop app only). Kept in a ref so the listener is set once.
+  // Text fields keep their own undo; true when the focused element took it.
+  const textFieldUndo = (cmd: string) => document.activeElement?.matches('input, textarea, [contenteditable]') ? document.execCommand(cmd) || true : false
   const menuRef = useRef<(cmd: string) => void>(() => {})
   useEffect(() => {
     menuRef.current = (cmd: string) => {
       const g = ref.current
+      if (cmd === 'undo' || cmd === 'redo') return textFieldUndo(cmd) || (cmd === 'undo' ? undo() : redo())
       if (cmd.startsWith('theme:')) return setTheme(cmd.slice(6) as Theme)
       if (cmd === 'new-topic') return newTopic()
       if (!g) return
@@ -349,6 +388,12 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement
+      // Desktop gets undo from the Edit menu; this covers browser mode.
+      if (!bridge && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (!textFieldUndo(e.shiftKey ? 'redo' : 'undo')) (e.shiftKey ? redo : undo)()
+        return
+      }
       if (e.key !== ' ' || el.closest('input, textarea, select, button, a, [contenteditable]')) return
       e.preventDefault()
       deeper()
@@ -395,6 +440,13 @@ export default function App() {
   const a = graph && view ? find(graph, graph.active)! : null
   const onGraph = new Set((graph?.nodes ?? []).filter((n) => n.status === 'solid').flatMap((n) => [n.label.toLowerCase(), (n.ref ?? '').toLowerCase()]))
   const [last, ...earlier] = [...allDives].sort((x, y) => y.updated - x.updated)
+  // Search: a dive matches when an opened node's label, summary or note contains the query.
+  const q = query.trim().toLowerCase()
+  // Only opened nodes: a suggestion never opened is not somewhere you have been.
+  const hitsOf = (n: GraphNode, g: Graph) => n.status === 'solid' && [n.label, n.research?.summary, g.notes[n.id]].some((s) => s?.toLowerCase().includes(q))
+  const rows: { d: Dive; ns: GraphNode[] }[] = q
+    ? allDives.map((d) => ({ d, ns: d.graph.nodes.filter((n) => hitsOf(n, d.graph)) })).filter((r) => r.ns.length > 0)
+    : earlier.map((d) => ({ d, ns: [] }))
   const recent = [...allDives].sort((x, y) => y.updated - x.updated).slice(0, 12)
   const stops = allDives.reduce((t, d) => t + d.graph.nodes.filter((n) => n.status === 'solid').length, 0)
 
@@ -498,19 +550,30 @@ export default function App() {
                     <Arrow />
                   </button>
                 )}
-                {earlier.length > 0 && (
+                {allDives.length >= 2 && (
+                  <input type="search" className="field toc-search" placeholder="Search your dives" aria-label="Search your dives" value={query} onChange={(e) => setQuery(e.target.value)} />
+                )}
+                {query.trim() && rows.length === 0 && <p className="label">Nothing in your dives matches "{query}".</p>}
+                {rows.length > 0 && (
                   <section className="toc m-in" style={{ '--i': 4 } as CSSProperties} aria-labelledby="dives-title">
-                    <h2 id="dives-title" className="label">Earlier dives</h2>
+                    <h2 id="dives-title" className="label">{q ? 'Matches' : 'Earlier dives'}</h2>
                     <ul>
-                      {earlier.map((d) => (
-                        <li key={d.id}>
-                          <button type="button" className="toc-row" onClick={() => openDive(d.id)} title={deepestTrail(d.graph)}>
-                            <span className="toc-title">{d.graph.nodes[0].label}</span>
-                            <span className="leader" aria-hidden="true" />
-                            <span className="toc-meta">{d.graph.nodes.filter((n) => n.status === 'solid').length} stops · {ago(d.updated)}</span>
-                          </button>
-                          <button type="button" className="icon-btn del" aria-label={`Delete dive ${d.graph.nodes[0].label}`} title="Delete dive" onClick={() => deleteDive(d.id)}><X /></button>
-                        </li>
+                      {rows.map(({ d, ns }) => (
+                        <Fragment key={d.id}>
+                          <li>
+                            <button type="button" className="toc-row" onClick={() => openDive(d.id)} title={deepestTrail(d.graph)}>
+                              <span className="toc-title">{d.graph.nodes[0].label}</span>
+                              <span className="leader" aria-hidden="true" />
+                              <span className="toc-meta">{d.graph.nodes.filter((n) => n.status === 'solid').length} stops · {ago(d.updated)}</span>
+                            </button>
+                            <button type="button" className="icon-btn del" aria-label={`Delete dive ${d.graph.nodes[0].label}`} title="Delete dive" onClick={() => deleteDive(d.id)}><X /></button>
+                          </li>
+                          {ns.length > 0 && (
+                            <li className="toc-hits">
+                              {ns.slice(0, 3).map((n) => <button key={n.id} type="button" className="link-btn toc-hit" onClick={() => openDive(d.id, n.id)}>{n.label}</button>)}
+                            </li>
+                          )}
+                        </Fragment>
                       ))}
                     </ul>
                   </section>
@@ -531,6 +594,7 @@ export default function App() {
                   <button type="button" className={c.cls} style={c.style} onClick={() => select(c.n.id)} aria-label={c.aria}>
                     {c.aspect && <svg className="shape" viewBox="0 0 120 120" aria-hidden="true"><path d={c.n.label.length % 2 ? BURST : CLOVER} /></svg>}
                     {c.tag && <span className={`tag${c.busy ? ' pulse' : ''}`} style={{ color: c.tagColor }}>{c.tag}</span>}
+                    {c.badge && <span className="card-badge" title={c.badge === 'AI' ? 'Suggested by the AI model, not found on Wikipedia' : 'Found on the web, not on Wikipedia'}>{c.badge}</span>}
                     <span className="title" style={c.titleStyle}>{c.n.label}</span>
                     {c.body && <span className="body" style={{ WebkitLineClamp: c.lines }}>{c.body}</span>}
                   </button>
@@ -680,6 +744,11 @@ export default function App() {
   )
 }
 
+// Wikipedia suggestions: an item Wikidata knows but Wikipedia lacks is researched from the web.
+function wikiItems(items: Suggestion[]): Suggestion[] {
+  return items.map((s) => ({ ...s, origin: s.offWiki ? 'web' : 'wiki' }))
+}
+
 // Positions, edges and card styles for one render of the graph.
 function buildView(g: Graph) {
   const pos = relayout(g)
@@ -723,6 +792,7 @@ function buildView(g: Graph) {
     const tag = busy ? (n.loading ? 'thinking' : 'researching') : isActive ? (n.steer ? `active · ${n.steer}` : 'active') : n.steer ? n.steer : n.steered ? 'steered' : n.tangent ? 'tangent' : dis ? 'dismissed' : aspect ? 'aspect' : isRoot ? 'seed' : ''
     return {
       n, busy, tag, aspect,
+      badge: n.origin === 'model' ? 'AI' : n.origin === 'web' ? 'Web' : '',
       tagColor: isActive ? 'var(--active-fg2)' : n.steered ? 'var(--eyebrow)' : 'var(--text2)',
       aria: `${ghost ? 'Open suggestion' : dis ? 'Restore' : 'Focus'} ${n.label}`,
       body: dis || (ghost && n.parent !== g.active) ? '' : ghost ? n.teaser ?? '' : n.research?.summary ?? n.teaser ?? '',

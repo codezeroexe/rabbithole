@@ -312,6 +312,7 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .card.is-active { border-radius: var(--active-radius); }
 .card:active { transform: scale(0.98); }
 .card .tag { font-family: var(--label-font); font-size: 10px; text-transform: var(--label-case); letter-spacing: var(--label-track); }
+.card-badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; border: 1px solid var(--ctrl-border); border-radius: 4px; padding: 0 4px; color: var(--text2); margin-left: 6px }
 .card .title { line-height: 1.2; font-variation-settings: var(--disp-var); }
 .card .body { font-size: 12.5px; line-height: 1.45; color: var(--text2); display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .card.is-active .body { color: var(--active-fg2); }
@@ -376,6 +377,9 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .toc-meta { flex: 0 0 auto; font-family: var(--mono); font-size: 12px; color: var(--text2); }
 .toc .del { position: absolute; right: 0; width: 30px; height: 30px; opacity: 0; transition: opacity var(--dur-1) var(--ease-out); }
 .toc li:hover .del, .toc .del:focus-visible { opacity: 1; }
+.toc-search { width: 100%; margin-bottom: 12px; }
+.toc li.toc-hits { display: block; border-top: none; padding: 0 0 8px; }
+.toc-hit { display: block; margin-left: 16px; text-align: left; }
 
 /* ---------- Motion system ----------
    Four durations and three curves, used everywhere:
