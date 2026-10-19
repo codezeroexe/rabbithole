@@ -1,6 +1,6 @@
 // Run with `npm run check`. Fails loudly if the graph logic or reply parsing breaks.
 import assert from 'node:assert/strict'
-import { addGhosts, contextFor, dismissNode, exportVault, kidsOf, newGraph, norm, relayout, steerNode } from './graph.ts'
+import { addGhosts, mergeGhosts, stripCites, contextFor, dismissNode, exportVault, kidsOf, newGraph, norm, relayout, steerNode } from './graph.ts'
 import { extractJson, parseResearch, parseSuggestions } from './ai.ts'
 import { mockSuggest } from './mock.ts'
 
@@ -33,11 +33,35 @@ assert.equal(g.active, brands.id)
 assert.equal(kidsOf(g, ferrari).length, 0)
 
 // Columns: x is depth * 300, siblings never share a y.
-const pos = relayout(g)
+const { pos } = relayout(g)
 assert.equal(pos.root.x, 0)
 assert.equal(pos[brands.id].x, 300)
 const ys = kidsOf(g, 'root').map((n) => pos[n.id].y)
 assert.equal(new Set(ys).size, ys.length)
+
+// Folding: a 5-deep path with 3 siblings per level, active at depth 5, hides siblings at depths 0-2.
+{
+  const f = newGraph('F')
+  let cur = f.nodes[0].id
+  const chain = [cur]
+  for (let d = 1; d <= 5; d++) {
+    for (let i = 0; i < 3; i++) f.nodes.push({ id: `f${d}_${i}`, label: `f${d}_${i}`, parent: cur, status: 'solid', tangent: false, steered: false, rolls: 0 })
+    cur = `f${d}_0`
+    chain.push(cur)
+  }
+  f.active = cur
+  const r = relayout(f)
+  assert.deepEqual(chain.slice(0, 3).map((id) => r.folds[id]), [2, 2, 2])
+  assert.equal(r.folds[chain[3]], undefined)
+  assert.ok(chain.every((id) => r.pos[id]))
+  assert.equal(r.pos['f1_1'], undefined)
+  assert.equal(r.pos['f3_1'], undefined)
+  assert.ok(r.pos['f4_1'])
+  const u = relayout(f, new Set([chain[1]]))
+  assert.ok(u.pos['f2_1'])
+  assert.equal(u.folds[chain[1]], undefined)
+  assert.equal(u.folds[chain[0]], 2)
+}
 
 // Vault: unique file names, wikilinks to the parent.
 steerNode(g, 'root', 'Types')
@@ -61,6 +85,14 @@ const r = parseResearch('{"summary":"S","facts":[{"k":"K","v":"V"},{"k":""}],"so
 assert.deepEqual(r.sources.map((s) => s.url), ['https://two.example', 'https://one.example'])
 assert.equal(r.facts.length, 1)
 assert.equal(r.verified, true)
+// Citations: renumbered to source-list position, out-of-range markers removed.
+const r3 = [...results, { title: 'Three', url: 'https://three.example', snippet: '' }]
+const c = parseResearch('{"summary":"A. [3] B. [1]","sources":[1]}', 'X', r3)
+assert.deepEqual(c.sources, [r3[2], r3[0]].map((x) => ({ title: x.title, url: x.url })))
+assert.equal(c.summary, 'A. [1] B. [2]')
+assert.equal(parseResearch('{"summary":"A. [9] B. [1]"}', 'X', r3).summary, 'A. B. [1]')
+assert.equal(stripCites('A. [1] B. [2]'), 'A. B.')
+assert.equal(parseResearch('{"summary":"Plain text."}', 'X', r3).summary, 'Plain text.')
 // Without search, only http(s) URLs survive.
 assert.deepEqual(parseResearch('{"summary":"S","sources":[{"title":"a","url":"javascript:alert(1)"}]}', 'X', []).sources, [])
 
@@ -77,6 +109,26 @@ assert.notEqual(norm('Glass'), norm('Glas'))
   const e = newGraph('Cars')
   addGhosts(e, 'root', [{ label: 'Ford', teaser: '', tangent: false, ref: 'Ford Motor Company' }, { label: 'Ford Motor', teaser: '', tangent: false, ref: 'Ford Motor Company' }])
   assert.equal(kidsOf(e, 'root').length, 1)
+}
+
+// Streaming: mergeGhosts keeps ids of ghosts still wanted, drops the rest, adds new ones; solid kids untouched.
+{
+  const m = newGraph('Cars')
+  const it = (label: string) => ({ label, teaser: '', tangent: false })
+  addGhosts(m, 'root', [it('Types'), it('History'), it('Brands')])
+  const id = (l: string) => kidsOf(m, 'root').find((n) => n.label === l)?.id
+  const [types, brandsId] = [id('Types'), id('Brands')]
+  kidsOf(m, 'root').find((n) => n.label === 'History')!.status = 'solid'
+  mergeGhosts(m, 'root', [it('Types'), it('Engines')])
+  assert.equal(id('Types'), types)
+  assert.equal(id('Brands'), undefined)
+  assert.ok(brandsId && id('Engines'))
+  assert.equal(id('History') !== undefined, true)
+  assert.equal(kidsOf(m, 'root').length, 3)
+  // Skeletons fill the slots the cards leave open while loading.
+  m.nodes.find((n) => n.id === 'root')!.loading = 1
+  const sk = Object.keys(relayout(m).pos).filter((k) => k.includes('~sk'))
+  assert.deepEqual(sk, ['root~sk3'])
 }
 
 console.log('graph checks passed')

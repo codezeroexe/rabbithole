@@ -136,7 +136,7 @@ export function researchPrompt(path: string[], results: SearchResult[]): string 
     lines.push(
       'Base the note on these web search results. Cite them by number; use nothing you cannot support from them or confidently know.',
       ...results.map((r, i) => `[${i + 1}] ${r.title} (${r.url})\n${r.snippet}`),
-      'summary: 2 or 3 plain sentences.',
+      'summary: 2 or 3 plain sentences. End each sentence with the number of the result it comes from in square brackets, like [2].',
       'facts: up to 4 short key/value pairs. Leave the list empty rather than guess.',
       'sources: the numbers of the results you used.',
       'Reply with only this JSON: {"summary":"...","facts":[{"k":"...","v":"..."}],"sources":[1,2]}',
@@ -164,12 +164,22 @@ export function parseResearch(text: string, label: string, results: SearchResult
   const d = rec(extractJson(text))
   const facts: Fact[] = (Array.isArray(d.facts) ? d.facts : []).map((f) => ({ k: str(rec(f).k), v: str(rec(f).v) })).filter((f) => f.k && f.v)
   const raw = Array.isArray(d.sources) ? d.sources : []
-  const sources: Source[] = results.length
+  let summary = str(d.summary)
+  let sources: Source[]
+  if (results.length) {
     // With search, sources are only ever results we fetched: the model picks them by number.
-    ? raw.map((n) => results[Number(n) - 1]).filter(Boolean).map((r) => ({ title: r.title, url: r.url }))
-    : raw.map((s) => ({ title: str(rec(s).title), url: str(rec(s).url) })).filter((s) => /^https?:\/\//.test(s.url))
-  return { summary: str(d.summary) || `No summary came back for ${label}.`, facts, sources, verified: results.length > 0 }
+    // Cited markers come first (first-cited order), then d.sources; markers are renumbered to list position.
+    const order: number[] = []
+    const ok = (n: number) => Number.isInteger(n) && n >= 1 && n <= results.length
+    for (const m of summary.matchAll(/\[(\d+)\]/g)) if (ok(+m[1]) && !order.includes(+m[1])) order.push(+m[1])
+    for (const n of raw) if (ok(Number(n)) && !order.includes(Number(n))) order.push(Number(n))
+    summary = summary.replace(/\s*\[(\d+)\]/g, (m, n) => (ok(+n) ? m.replace(/\d+/, String(order.indexOf(+n) + 1)) : ''))
+    sources = order.map((n) => ({ title: results[n - 1].title, url: results[n - 1].url }))
+  } else sources = raw.map((s) => ({ title: str(rec(s).title), url: str(rec(s).url) })).filter((s) => /^https?:\/\//.test(s.url))
+  return { summary: summary || `No summary came back for ${label}.`, facts, sources, verified: results.length > 0 }
 }
+
+// Drop [n] citation markers (cards, plain exports).
 
 // Keyless 'web' mixes the open web (main process) with Wikipedia, so research never rests on one site.
 export async function searchFor(q: string, search: string): Promise<SearchResult[]> {

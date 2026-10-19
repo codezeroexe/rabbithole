@@ -53,6 +53,8 @@ export type Graph = {
 let seq = 0
 export const nid = () => `n${Date.now().toString(36)}${(seq++).toString(36)}`
 const lc = (s: string) => s.toLowerCase()
+// Citation markers ("[2]") belong in the panel and the vault, not on cards or plain Markdown.
+export const stripCites = (s: string) => s.replace(/\s*\[\d+\]/g, '')
 // "The Beatles" = "Beatles", "Ferrari (company)" = "Ferrari", "Cars" = "Car".
 export const norm = (s: string) =>
   s.toLowerCase().replace(/\s+\([^)]*\)$/, '').replace(/^(the|a|an)\s+/, '')
@@ -158,6 +160,13 @@ export function addGhosts(g: Graph, pid: string, items: Suggestion[]) {
   }
 }
 
+// Streaming: swap a node's ghosts for a new set. Ghosts whose label is still in `items` stay (same id, no jump).
+export function mergeGhosts(g: Graph, pid: string, items: Suggestion[]) {
+  const keep = new Set(items.map((s) => norm(s.label)))
+  g.nodes = g.nodes.filter((n) => !(n.parent === pid && n.status === 'ghost' && !keep.has(norm(n.label))))
+  addGhosts(g, pid, items)
+}
+
 // Remove a node's whole subtree and mark it dismissed (a negative hint for its parent).
 export function dismissNode(g: Graph, id: string) {
   const n = find(g, id)
@@ -215,21 +224,33 @@ export function steerOn(g: Graph, id: string, words: string) {
 export const COLUMN = 300
 export const SKELETONS = 4
 
-export function relayout(g: Graph): Record<string, { x: number; y: number }> {
+// Path nodes 3+ levels above the active one show only their path child; `folds` counts the rest.
+export function relayout(g: Graph, unfolded: Set<string> = new Set()) {
   const pos: Record<string, { x: number; y: number }> = {}
+  const folds: Record<string, number> = {}
+  const path = pathOf(g, g.active)
+  const pathIds = new Set(path.map((n) => n.id))
+  const maxFold = path.length - 1 - 3
   let cursor = 0
   // Ghosts off the active branch show their title only, so they are shorter.
   const est = (n: GraphNode) =>
     n.id === g.active ? 170 : n.status === 'dismissed' ? 44 : n.status === 'ghost' ? (n.parent === g.active ? 92 : 48) : n.parent ? 100 : 110
   const place = (n: GraphNode, depth: number) => {
-    const kids = kidsOf(g, n.id)
-    // While suggestions load, reserve room for skeleton cards: ids `<parent>~sk0` and up.
-    if (!kids.length && n.loading) {
-      const first = cursor
-      for (let i = 0; i < SKELETONS; i++) {
+    let kids = kidsOf(g, n.id)
+    if (depth <= maxFold && pathIds.has(n.id) && !unfolded.has(n.id) && kids.length > 1) {
+      folds[n.id] = kids.length - 1
+      kids = kids.filter((k) => pathIds.has(k.id))
+    }
+    // While suggestions load, reserve skeleton slots `<parent>~sk<i>` below any cards already in (i from kids.length).
+    const skel = (from: number) => {
+      for (let i = from; i < SKELETONS; i++) {
         pos[`${n.id}~sk${i}`] = { x: (depth + 1) * COLUMN, y: cursor + 46 }
         cursor += 92 + 14
       }
+    }
+    if (!kids.length && n.loading) {
+      const first = cursor
+      skel(0)
       pos[n.id] = { x: depth * COLUMN, y: (first + cursor - 14) / 2 }
       return
     }
@@ -240,10 +261,12 @@ export function relayout(g: Graph): Record<string, { x: number; y: number }> {
       return
     }
     kids.forEach((k) => place(k, depth + 1))
-    pos[n.id] = { x: depth * COLUMN, y: (pos[kids[0].id].y + pos[kids[kids.length - 1].id].y) / 2 }
+    const top = pos[kids[0].id].y
+    if (n.loading && kids.length < SKELETONS) { skel(kids.length); pos[n.id] = { x: depth * COLUMN, y: (top + cursor - 14 - 46) / 2 }; return }
+    pos[n.id] = { x: depth * COLUMN, y: (top + pos[kids[kids.length - 1].id].y) / 2 }
   }
   g.nodes.filter((n) => !n.parent).forEach((r) => place(r, 0))
-  return pos
+  return { pos, folds }
 }
 
 export function exportMarkdown(g: Graph): string {
@@ -251,7 +274,7 @@ export function exportMarkdown(g: Graph): string {
   const walk = (n: GraphNode, depth: number) => {
     const pad = '  '.repeat(depth)
     lines.push(`${pad}- **${n.label}**${n.steered ? ' (steered)' : ''}`)
-    if (n.research?.summary) lines.push(`${pad}  ${n.research.summary}`)
+    if (n.research?.summary) lines.push(`${pad}  ${stripCites(n.research.summary)}`)
     if (g.notes[n.id]) lines.push(`${pad}  > ${g.notes[n.id]}`)
     kidsOf(g, n.id).filter((k) => k.status === 'solid').forEach((k) => walk(k, depth + 1))
   }
@@ -289,7 +312,7 @@ export function exportVault(g: Graph): { name: string; text: string }[] {
     if (r?.summary) parts.push(r.summary, '')
     if (r?.facts.length) parts.push(...r.facts.map((f) => `- **${f.k}:** ${f.v}`), '')
     if (kids.length) parts.push('## Branches', ...kids.map((k) => `- [[${names.get(k.id)}]]`), '')
-    if (r?.sources.length) parts.push('## Sources', ...r.sources.map((s) => `- [${s.title}](${s.url})`), '')
+    if (r?.sources.length) parts.push('## Sources', ...r.sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`), '')
     if (g.notes[n.id]) parts.push('## Notes', g.notes[n.id], '')
     return { name: `${names.get(n.id)}.md`, text: parts.join('\n') }
   })

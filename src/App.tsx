@@ -2,10 +2,10 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { flushSync } from 'react-dom'
 import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import {
-  addGhosts, clearGhosts, kindOf, linkNode, steerOn, contextFor, dismissNode, exportMarkdown, exportVault, find, kidsOf, liveKids,
-  COLUMN, newGraph, pathOf, relayout, SKELETONS, tangentsFor,
+  clearGhosts, kindOf, linkNode, steerOn, contextFor, dismissNode, exportMarkdown, exportVault, find, kidsOf, liveKids, mergeGhosts,
+  COLUMN, newGraph, pathOf, relayout, SKELETONS, stripCites, tangentsFor,
 } from './graph.ts'
-import type { ExpandContext, Graph, GraphNode, Research, Suggestion } from './graph.ts'
+import type { ExpandContext, Graph, GraphNode, Research, Source, Suggestion } from './graph.ts'
 import { bridge, listProxyModels, research, searchFor, suggest } from './ai.ts'
 import type { ModelOption, Settings } from './ai.ts'
 import { mockResearch, mockSuggest } from './mock.ts'
@@ -29,6 +29,14 @@ const save = (key: string, value: unknown) => { try { localStorage.setItem(key, 
 type Dive = { id: string; updated: number; graph: Graph }
 const clone = (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n) => ({ ...n })), notes: { ...g.notes } })
 let reqSeq = 1
+
+// Summary with [k] markers as superscript links to sources[k - 1]; plain text passes through.
+function cited(s: string, sources: Source[]) {
+  return s.split(/(\[\d+\])/).map((p, i) => {
+    const src = /^\[\d+\]$/.test(p) ? sources[+p.slice(1, -1) - 1] : undefined
+    return src ? <sup key={i}><a href={src.url} target="_blank" rel="noreferrer" title={src.title}>{p.slice(1, -1)}</a></sup> : p
+  })
+}
 
 function download(name: string, text: string) {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }))
@@ -112,6 +120,7 @@ export default function App() {
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [unfolded, setUnfolded] = useState<Set<string>>(new Set())
   const [wheeling, setWheeling] = useState(false)
   const [size, setSize] = useState({ w: 0, h: 0 })
   const stageRef = useRef<HTMLElement>(null)
@@ -178,6 +187,7 @@ export default function App() {
     setGraph(g)
     setPan({ x: 0, y: 0 })
     prefetched.current.clear()
+    setUnfolded(new Set())
   }
   const undo = () => {
     const g = past.current.pop()
@@ -193,13 +203,13 @@ export default function App() {
   }
 
   // Suggestions for one node, never touching the graph or the error banner: the caller decides what to show.
-  const fetchSuggestions = useCallback(async (ctx: ExpandContext, kind: string): Promise<{ items: Suggestion[]; ref?: string; error?: string }> => {
+  const fetchSuggestions = useCallback(async (ctx: ExpandContext, kind: string, onPartial?: (items: Suggestion[]) => void): Promise<{ items: Suggestion[]; ref?: string; error?: string }> => {
     let items: Suggestion[] = []
     let ref: string | undefined
     let error: string | undefined
     try {
       if (kind === OFFLINE) items = mockSuggest(ctx)
-      else if (kind === FREE) { const r = await wikiSuggest(ctx); items = wikiItems(r.items); ref = r.ref }
+      else if (kind === FREE) { const r = await wikiSuggest(ctx, onPartial && ((p) => onPartial(wikiItems(p)))); items = wikiItems(r.items); ref = r.ref }
       else {
         // Ground the model in the real article so it stays on topic; carry on without it if Wikipedia is down.
         // The model picks from (and words) real articles that already fit the path.
@@ -248,7 +258,9 @@ export default function App() {
     const g = commit((g) => { clearGhosts(g, id); const n = find(g, id); if (n && !hit?.r) n.loading = req })
     if (!g || !find(g, id)) return
     const ctx = contextFor(g, id)
-    const { items, ref: found, error } = hit?.r ?? await (hit?.p ?? fetchSuggestions(ctx, engine()))
+    // Free engine: aspects land first; show them while the rest loads (dropped if this request is superseded).
+    const onPartial = (items: Suggestion[]) => { commit((g) => { const n = find(g, id); if (n && n.loading === req) mergeGhosts(g, id, items) }) }
+    const { items, ref: found, error } = hit?.r ?? await (hit?.p ?? fetchSuggestions(ctx, engine(), engine() === FREE ? onPartial : undefined))
     if (error) setError(error)
     let applied = false
     const next = commit((g) => {
@@ -257,7 +269,8 @@ export default function App() {
       applied = true
       n.loading = undefined
       if (found && !n.ref) n.ref = found
-      addGhosts(g, id, items)
+      // An error keeps what already streamed in.
+      if (items.length) mergeGhosts(g, id, items)
     })
     // Warm the Go-deeper target (same pick as deeper()) while the user reads.
     if (applied && next) {
@@ -316,6 +329,7 @@ export default function App() {
   }, [commit])
 
   const select = useCallback((id: string) => {
+    setUnfolded(new Set())
     const g = commit((g) => { const n = find(g, id); if (n) { n.status = 'solid'; g.active = id } })
     if (!g) return
     setPan({ x: 0, y: 0 })
@@ -330,7 +344,7 @@ export default function App() {
     if (!seed) return
     const g = { ...newGraph(seed), updated: Date.now() }
     morph(() => {
-      past.current = []; future.current = []; prefetched.current.clear()
+      past.current = []; future.current = []; prefetched.current.clear(); setUnfolded(new Set())
       ref.current = g
       setDiveId(`d${Date.now().toString(36)}`)
       setGraph(g)
@@ -393,13 +407,13 @@ export default function App() {
   }, [select])
 
   // A new dive keeps the current one in the list; nothing is lost.
-  const goHome = (compose: boolean) => morph(() => { past.current = []; future.current = []; prefetched.current.clear(); setDives(allDives); ref.current = null; setGraph(null); setDiveId(null); setError(null); setPan({ x: 0, y: 0 }); setZoom(1); setComposing(compose); setQuery('') })
+  const goHome = (compose: boolean) => morph(() => { past.current = []; future.current = []; prefetched.current.clear(); setUnfolded(new Set()); setDives(allDives); ref.current = null; setGraph(null); setDiveId(null); setError(null); setPan({ x: 0, y: 0 }); setZoom(1); setComposing(compose); setQuery('') })
   const newTopic = () => goHome(true)
   const openDive = (id: string, nodeId?: string) => {
     const d = allDives.find((x) => x.id === id)
     if (!d) return newTopic()
     morph(() => {
-      past.current = []; future.current = []; prefetched.current.clear()
+      past.current = []; future.current = []; prefetched.current.clear(); setUnfolded(new Set())
       setDives(allDives)
       const g = nodeId && d.graph.nodes.some((n) => n.id === nodeId) ? { ...d.graph, active: nodeId } : d.graph
       ref.current = g
@@ -501,7 +515,7 @@ export default function App() {
 
   // Drag the empty canvas to pan; a click on a card never starts a drag.
   const onPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
-    if (!graph || (e.target as HTMLElement).closest('.card-wrap, .home, .minimap')) return
+    if (!graph || (e.target as HTMLElement).closest('.card-wrap, .fold-pill, .home, .minimap')) return
     drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }
     setDragging(true)
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -533,7 +547,7 @@ export default function App() {
     }
   }
 
-  const view = useMemo(() => (graph ? buildView(graph) : null), [graph])
+  const view = useMemo(() => (graph ? buildView(graph, unfolded) : null), [graph, unfolded])
 
   // Camera: world point P sits at origin + pan + zoom * (P - active). Origin is the .camera anchor (34%, 46%).
   const origin = { x: size.w * 0.34, y: size.h * 0.46 }
@@ -690,7 +704,7 @@ export default function App() {
         <main
           ref={stageRef}
           className={`stage${dragging ? ' dragging' : ''}${wheeling ? ' wheeling' : ''}`}
-          onDoubleClick={(e) => { if (graph && !(e.target as HTMLElement).closest('.card-wrap, .home, .minimap')) { setZoom(1); setPan({ x: 0, y: 0 }) } }}
+          onDoubleClick={(e) => { if (graph && !(e.target as HTMLElement).closest('.card-wrap, .fold-pill, .home, .minimap')) { setZoom(1); setPan({ x: 0, y: 0 }) } }}
           aria-label="Graph. Press Space to go deeper."
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         >
@@ -758,6 +772,9 @@ export default function App() {
                   <div className="card skeleton"><span /><span /><span /></div>
                 </div>
               ))}
+              {view.folds.map((f) => (
+                <button key={`fold-${f.id}`} type="button" className="fold-pill" style={{ left: f.at.x, top: f.at.y }} aria-label={`Show ${f.count} more under ${f.label}`} onClick={() => setUnfolded((u) => new Set(u).add(f.id))}>+{f.count} more</button>
+              ))}
               {view.cards.map((c) => (
                 <div key={c.n.id} className="card-wrap" style={c.wrap}>
                   <button type="button" className={c.cls} data-id={c.n.id} style={c.style} onClick={() => select(c.n.id)} onPointerEnter={() => hoverGhost(c.n.id, c.cls.includes('is-ghost'))} onPointerLeave={() => window.clearTimeout(hoverTimer.current)} aria-label={c.aria}>
@@ -813,7 +830,7 @@ export default function App() {
 
             <section>
               <h2>Summary</h2>
-              {a.researching && !a.research ? <p className="muted pulse">Researching {a.label}…</p> : <p>{a.research?.summary ?? a.teaser ?? 'No research yet.'}</p>}
+              {a.researching && !a.research ? <p className="muted pulse">Researching {a.label}…</p> : <p>{a.research ? cited(a.research.summary, a.research.sources) : a.teaser ?? 'No research yet.'}</p>}
             </section>
             {!!a.research?.facts.length && (
               <section>
@@ -936,12 +953,12 @@ function wikiItems(items: Suggestion[]): Suggestion[] {
 }
 
 // Positions, edges and card styles for one render of the graph.
-function buildView(g: Graph) {
-  const pos = relayout(g)
+function buildView(g: Graph, unfolded: Set<string>) {
+  const { pos, folds: foldCounts } = relayout(g, unfolded)
   const onPath = new Set(pathOf(g, g.active).map((n) => n.id))
   const byId = new Map(g.nodes.map((n) => [n.id, n]))
 
-  const edges = g.nodes.filter((n) => n.parent && byId.has(n.parent)).map((n) => {
+  const edges = g.nodes.filter((n) => n.parent && pos[n.parent] && pos[n.id]).map((n) => {
     const p = pos[n.parent!], q = pos[n.id]
     const dx = q.x - p.x, dy = q.y - p.y
     const border = onPath.has(n.id) && onPath.has(n.parent!) ? '2px solid var(--path)'
@@ -958,14 +975,14 @@ function buildView(g: Graph) {
     }
   })
   // Placeholder cards (and their edges) for a node whose suggestions are loading.
-  const skeletons = g.nodes.filter((n) => n.loading && pos[`${n.id}~sk0`]).flatMap((n) =>
-    Array.from({ length: SKELETONS }, (_, i) => ({ id: `${n.id}~sk${i}`, from: pos[n.id], at: pos[`${n.id}~sk${i}`] })))
+  const skeletons = g.nodes.filter((n) => n.loading).flatMap((n) =>
+    Array.from({ length: SKELETONS }, (_, i) => ({ id: `${n.id}~sk${i}`, from: pos[n.id], at: pos[`${n.id}~sk${i}`] })).filter((s) => s.at))
   for (const s of skeletons) {
     const dx = s.at.x - s.from.x, dy = s.at.y - s.from.y
     edges.push({ id: s.id, style: { left: s.from.x, top: s.from.y, width: Math.hypot(dx, dy), borderTop: '1px dashed var(--edge-faint)', transform: `rotate(${(Math.atan2(dy, dx) * 180) / Math.PI}deg)`, opacity: 1 } })
   }
 
-  const cards = g.nodes.map((n: GraphNode) => {
+  const cards = g.nodes.filter((n) => pos[n.id]).map((n: GraphNode) => {
     const ghost = n.status === 'ghost', dis = n.status === 'dismissed'
     const isActive = n.id === g.active, isRoot = !n.parent
     const busy = !!(n.loading || n.researching)
@@ -981,7 +998,7 @@ function buildView(g: Graph) {
       badge: n.origin === 'model' ? 'AI' : n.origin === 'web' ? 'Web' : '',
       tagColor: isActive ? 'var(--active-fg2)' : n.steered ? 'var(--eyebrow)' : 'var(--text2)',
       aria: `${ghost ? 'Open suggestion' : dis ? 'Restore' : 'Focus'} ${n.label}`,
-      body: dis || (ghost && n.parent !== g.active) ? '' : ghost ? n.teaser ?? '' : n.research?.summary ?? n.teaser ?? '',
+      body: dis || (ghost && n.parent !== g.active) ? '' : ghost ? n.teaser ?? '' : (n.research ? stripCites(n.research.summary) : n.teaser ?? ''),
       cls: `card${aspect ? ' aspect' : ''}${isActive ? ' is-active' : ''}${ghost ? ' is-ghost' : ''}${dis ? ' is-dismissed' : ''}${isRoot ? ' is-root' : ''}`,
       lines: isActive ? 5 : 2,
       wrap: {
@@ -1020,5 +1037,6 @@ function buildView(g: Graph) {
     depth, x: depth * COLUMN, y: c.top - 28, name: depth ? `Depth ${depth}` : 'Seed',
     count: depth ? [c.opened && `${c.opened} opened`, c.suggested && `${c.suggested} suggested`].filter(Boolean).join(' · ') : '',
   }))
-  return { pos, edges, cards, skeletons, rail }
+  const folds = Object.entries(foldCounts).map(([id, count]) => ({ id, count, label: byId.get(id)!.label, at: { x: pos[id].x, y: pos[id].y + 70 } }))
+  return { pos, folds, edges, cards, skeletons, rail }
 }

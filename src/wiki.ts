@@ -208,23 +208,32 @@ const aspectItem = (a: Aspect): Suggestion => ({
   teaser: a.members.length ? preview(a.members) : `The ${lc(a.label)} part of the ${labelOf(a.facet.of)} article.`,
 })
 
-export async function wikiSuggest(c: ExpandContext): Promise<{ ref?: string; items: Suggestion[] }> {
+export async function wikiSuggest(c: ExpandContext, onPartial?: (items: Suggestion[]) => void): Promise<{ ref?: string; items: Suggestion[] }> {
   const items = c.kind === 'aspect' && c.facet ? await memberSuggest(c, c.facet) : null
   if (items) return { items }
   if (c.offWiki) throw new Error(`${c.label} has no Wikipedia article yet, so there is nothing to branch into. Its note comes from the web and the news.`)
   const title = await resolve(c)
-  return { ref: title, items: await articleSuggest(c, title) }
+  return { ref: title, items: await articleSuggest(c, title, onPartial) }
 }
 
 // A thing or a cross: its aspects first, then related articles that fit the whole path.
-async function articleSuggest(c: ExpandContext, title: string): Promise<Suggestion[]> {
+async function articleSuggest(c: ExpandContext, title: string, onPartial?: (items: Suggestion[]) => void): Promise<Suggestion[]> {
   const outer = c.anchors.map(refOf)
   const anchors = [title, ...outer]
   // A cross ("YouTube" under "Minecraft") means both at once: everything under it must fit both.
   const cross = c.kind === 'cross' && outer.length > 0
   const scope = [c.label, c.steer, ...c.qualifiers, ...c.anchors.slice(0, 2).map((a) => labelOf(a.label))].filter(Boolean).join(' ')
+  // Aspects land well before the rest: show them first. A cross needs the fit data to filter them, so it waits.
+  const early = aspectsOf(title)
+  if (onPartial && !cross) early.then((a) => {
+    const shown = a.filter((x) => !c.taken.map(lc).includes(lc(x.label)))
+    const n = Math.min(shown.length, c.focusCount - 1)
+    const k = shown.length ? (c.rolls * Math.max(n, 1)) % shown.length : 0
+    const items = [...shown.slice(k), ...shown.slice(0, k)].slice(0, n).map(aspectItem)
+    if (items.length) onPartial(items)
+  }, () => {})
   const [aspects, lead, also, like, inScope] = await Promise.all([
-    aspectsOf(title), leadLinks(title).catch(() => [] as string[]),
+    early, leadLinks(title).catch(() => [] as string[]),
     c.tangentCount ? seeAlso(title).catch(() => [] as string[]) : [], c.tangentCount ? moreLike(title).catch(() => [] as string[]) : [],
     outer.length || c.steer ? search(scope, 20).catch(() => []) : Promise.resolve([] as string[]),
   ])
