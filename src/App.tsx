@@ -3,9 +3,9 @@ import { flushSync } from 'react-dom'
 import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import {
   clearGhosts, kindOf, linkNode, steerOn, contextFor, dismissNode, exportMarkdown, exportVault, find, kidsOf, liveKids, mergeGhosts,
-  COLUMN, newGraph, pathOf, relayout, SKELETONS, stripCites, tangentsFor,
+  COLUMN, newGraph, pathOf, relayout, shapeLayout, SKELETONS, stripCites, tangentsFor,
 } from './graph.ts'
-import type { ExpandContext, Graph, GraphNode, Research, Source, Suggestion } from './graph.ts'
+import type { ExpandContext, Graph, GraphNode, Layout, Research, Source, Suggestion } from './graph.ts'
 import { bridge, listProxyModels, research, searchFor, suggest } from './ai.ts'
 import type { ModelOption, Settings } from './ai.ts'
 import { mockResearch, mockSuggest } from './mock.ts'
@@ -633,8 +633,9 @@ export default function App() {
     }
   }
 
-  // prefsTick: the graph layout pref can change in Settings.
-  const view = useMemo(() => (graph ? buildView(graph, unfolded) : null), [graph, unfolded, prefsTick])
+  // Read each render (prefsTick redraws on a Settings change) so the memo sees the layout pref change.
+  const layout = prefsTick < 0 ? 'tree' : prefs().layout
+  const view = useMemo(() => (graph ? buildView(graph, unfolded, layout) : null), [graph, unfolded, layout])
 
   // Camera: world point P sits at origin + pan + zoom * (P - active). Origin is the .camera anchor (34%, 46%).
   const origin = { x: size.w * 0.34, y: size.h * 0.46 }
@@ -705,10 +706,13 @@ export default function App() {
     const k = Math.min(160 / (Math.max(...xs) + 125 - x0), 110 / (Math.max(...ys) + 90 - y0))
     const ox = (160 - k * (Math.max(...xs) + 125 - x0)) / 2, oy = (110 - k * (Math.max(...ys) + 90 - y0)) / 2
     const onPath = new Set(pathOf(graph, graph.active).map((n) => n.id))
+    // Heat: deeper dots are stronger, 0.25 at depth 1 up to 0.9 at the deepest.
+    const depth = new Map(live.map((n) => [n.id, pathOf(graph, n.id).length - 1]))
+    const deepest = Math.max(...depth.values())
     const vx = here.x + (-origin.x - pan.x) / zoom, vy = here.y + (-origin.y - pan.y) / zoom
     return {
       k, ox, oy, x0, y0,
-      dots: live.map((n) => ({ id: n.id, x: ox + k * (view.pos[n.id].x - x0) - 2, y: oy + k * (view.pos[n.id].y - y0) - 1.5, hot: onPath.has(n.id) })),
+      dots: live.map((n) => ({ id: n.id, x: ox + k * (view.pos[n.id].x - x0) - 2, y: oy + k * (view.pos[n.id].y - y0) - 1.5, hot: onPath.has(n.id), heat: deepest > 1 ? 0.25 + (0.65 * (Math.max(depth.get(n.id)!, 1) - 1)) / (deepest - 1) : 0.9 })),
       box: { x: ox + k * (vx - x0), y: oy + k * (vy - y0), w: (k * size.w) / zoom, h: (k * size.h) / zoom },
     }
   })()
@@ -932,7 +936,7 @@ export default function App() {
           {replay && graph && <ReplayChip at={replay.i + 1} total={replay.ids.length} label={find(graph, replay.ids[replay.i])?.label ?? ''} onStop={stopReplay} />}
           {mini && (
             <svg className="minimap" width="160" height="110" viewBox="0 0 160 110" aria-hidden="true" onPointerDown={onMiniClick}>
-              {mini.dots.map((d) => <rect key={d.id} x={d.x} y={d.y} width="4" height="3" fill={d.hot ? 'var(--path)' : 'var(--muted)'} />)}
+              {mini.dots.map((d) => <rect key={d.id} x={d.x} y={d.y} width="4" height="3" fill={d.hot ? 'var(--path)' : 'var(--active)'} fillOpacity={d.hot ? 1 : d.heat} />)}
               <rect x={mini.box.x} y={mini.box.y} width={mini.box.w} height={mini.box.h} fill="none" stroke="var(--active)" strokeWidth="1" />
             </svg>
           )}
@@ -1108,8 +1112,9 @@ function wikiItems(items: Suggestion[]): Suggestion[] {
 }
 
 // Positions, edges and card styles for one render of the graph.
-function buildView(g: Graph, unfolded: Set<string>) {
-  const { pos, folds: foldCounts } = relayout(g, unfolded)
+function buildView(g: Graph, unfolded: Set<string>, layout: Layout) {
+  const { pos: tree, folds: foldCounts } = relayout(g, unfolded)
+  const pos = shapeLayout(tree, layout)
   const onPath = new Set(pathOf(g, g.active).map((n) => n.id))
   const byId = new Map(g.nodes.map((n) => [n.id, n]))
 
@@ -1177,21 +1182,23 @@ function buildView(g: Graph, unfolded: Set<string>) {
     }
   })
 
-  // Depth rail: a label above each column, saying what that depth holds.
-  const cols = new Map<number, { top: number; opened: number; suggested: number }>()
+  // Depth rail: a label above each column (left of each row when drawn downward, none on rings).
+  // Depth comes from the tree positions; the label is placed from the shaped ones.
+  const cols = new Map<number, { top: number; left: number; y: number; opened: number; suggested: number }>()
   for (const n of g.nodes) {
     const p = pos[n.id]
     if (!p || n.status === 'dismissed') continue
-    const d = Math.round(p.x / COLUMN)
-    const c = cols.get(d) ?? { top: Infinity, opened: 0, suggested: 0 }
+    const d = Math.round(tree[n.id].x / COLUMN)
+    const c = cols.get(d) ?? { top: Infinity, left: Infinity, y: p.y, opened: 0, suggested: 0 }
     c.top = Math.min(c.top, p.y - (n.id === g.active ? 100 : 60))
+    c.left = Math.min(c.left, p.x)
     if (n.status === 'ghost') c.suggested++; else c.opened++
     cols.set(d, c)
   }
-  const rail = [...cols.entries()].map(([depth, c]) => ({
-    depth, x: depth * COLUMN, y: c.top - 28, name: depth ? `Depth ${depth}` : 'Seed',
+  const rail = layout === 'radial' ? [] : [...cols.entries()].map(([depth, c]) => ({
+    depth, x: layout === 'down' ? c.left - 255 : depth * COLUMN, y: layout === 'down' ? c.y - 8 : c.top - 28, name: depth ? `Depth ${depth}` : 'Seed',
     count: depth ? [c.opened && `${c.opened} opened`, c.suggested && `${c.suggested} suggested`].filter(Boolean).join(' · ') : '',
   }))
-  const folds = Object.entries(foldCounts).map(([id, count]) => ({ id, count, label: byId.get(id)!.label, at: { x: pos[id].x, y: pos[id].y + 70 } }))
+  const folds = Object.entries(foldCounts).map(([id, count]) => ({ id, count, label: byId.get(id)!.label, at: layout === 'down' ? { x: pos[id].x + 175, y: pos[id].y } : { x: pos[id].x, y: pos[id].y + 70 } }))
   return { pos, folds, edges, cards, skeletons, rail }
 }

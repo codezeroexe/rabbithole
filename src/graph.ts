@@ -271,6 +271,47 @@ export function relayout(g: Graph, unfolded: Set<string> = new Set()) {
   return { pos, folds }
 }
 
+// Redraws a left-to-right layout as 'down' (depth runs downward) or 'radial' (depth is a ring around
+// the seed). Depth comes back from x / COLUMN; the tree's y is the sibling order, which keeps every
+// subtree contiguous and each parent level with the middle of its children in either shape.
+export type Layout = 'tree' | 'down' | 'radial'
+export const ROW = 230 // down: tall enough for an active card (~170) above a row of normal ones
+export const RING = 320 // radial: wider than a card, so adjacent rings never touch
+export function shapeLayout(pos: Record<string, { x: number; y: number }>, layout: Layout) {
+  if (layout === 'tree') return pos
+  const ids = Object.keys(pos)
+  const out: Record<string, { x: number; y: number }> = {}
+  // The tightest tree gap in a column is ~58 (dismissed cards), so x3 keeps even those 170+ apart.
+  if (layout === 'down') {
+    for (const id of ids) out[id] = { x: pos[id].y * 3, y: Math.round(pos[id].x / COLUMN) * ROW }
+    return out
+  }
+  const ys = ids.map((id) => pos[id].y)
+  const lo = Math.min(...ys), span = Math.max(...ys) - lo || 1
+  // Sweep 90% of the circle, centred on +x like the tree, so the seam never joins two siblings.
+  const ang = (id: string) => ((pos[id].y - lo) / span - 0.5) * Math.PI * 1.8
+  const depthOf = (id: string) => Math.round(pos[id].x / COLUMN)
+  const rings = new Map<number, string[]>()
+  for (const id of ids) rings.set(depthOf(id), [...(rings.get(depthOf(id)) ?? []), id])
+  // Radius: d rings out, pushed further when a crowded ring would put cards closer than a card width.
+  const radius = new Map<number, number>()
+  let prev = 0
+  for (const d of [...rings.keys()].sort((a, b) => a - b)) {
+    if (d <= 0) { radius.set(d, 0); continue }
+    const as = rings.get(d)!.map(ang).sort((a, b) => a - b)
+    let gap = Infinity
+    for (let i = 1; i < as.length; i++) if (as[i] > as[i - 1]) gap = Math.min(gap, as[i] - as[i - 1])
+    const need = gap === Infinity ? 0 : 230 / (2 * Math.sin(Math.min(gap, Math.PI) / 2))
+    prev = Math.max(d * RING, prev + RING, need)
+    radius.set(d, prev)
+  }
+  for (const id of ids) {
+    const r = radius.get(depthOf(id)) ?? 0, a = ang(id)
+    out[id] = r ? { x: r * Math.cos(a), y: r * Math.sin(a) } : { x: 0, y: 0 }
+  }
+  return out
+}
+
 export function exportMarkdown(g: Graph): string {
   const lines: string[] = []
   const walk = (n: GraphNode, depth: number) => {
