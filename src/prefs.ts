@@ -45,7 +45,7 @@ export const MOD = /Mac/.test(navigator.userAgent) ? '⌘' : 'Ctrl+'
 // Every shortcut in the main window, for the shortcuts sheet and the About pane.
 export const SHORTCUTS: [string, string][] = [
   ['↓ ↑', 'Move between suggestions'], ['→ or Space', 'Go deeper'], ['←', 'Go up'], ['Enter', 'Open the focused card'],
-  ['X or Delete', 'Dismiss the focused card'], ['R', 'Re-roll'], ['S', 'Steer'], ['F', 'Fit the path on screen'],
+  ['X or Delete', 'Dismiss the focused card'], ['R', 'Re-roll'], ['S', 'Steer'], ['B', 'Star or unstar this node'], ['F', 'Fit the path on screen'],
   [`${MOD}Z`, 'Undo'], [`${MOD === '⌘' ? '⇧⌘' : 'Ctrl+Shift+'}Z`, 'Redo'], [`${MOD}N`, 'New dive'], [`${MOD},`, 'Settings'], ['?', 'Show or hide this list'],
 ]
 

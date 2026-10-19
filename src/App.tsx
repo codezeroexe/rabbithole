@@ -13,6 +13,7 @@ import { THEMES, nativeTheme } from './Settings.tsx'
 import type { Theme } from './Settings.tsx'
 import { wikiAspectResearch, wikiHints, wikiResearch, wikiSuggest } from './wiki.ts'
 import { Reader } from './Reader.tsx'
+import { CardPreview, ReplayChip, StarIcon } from './NodeExtras.tsx'
 import { applyGlass, BREADTH, MOD, prefs, setPrefs, SHORTCUTS } from './prefs.ts'
 import { forgetCache } from './net.ts'
 import { applyCustom } from './custom.ts'
@@ -148,6 +149,11 @@ export default function App() {
   const crumbsRef = useRef<HTMLElement>(null)
   const wheelTimer = useRef(0)
   const hoverTimer = useRef(0)
+  // The suggestion previewed after resting on it; it hides as soon as the camera moves (pan or zoom change).
+  const [preview, setPreview] = useState<{ id: string; pan: { x: number; y: number }; zoom: number } | null>(null)
+  // Trail replay: view-only walk through graph.visits.
+  const [replay, setReplay] = useState<{ ids: string[]; i: number } | null>(null)
+  const stepReplay = useRef<(ids: string[], i: number) => void>(() => {})
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null)
   const ref = useRef<Graph | null>(graph)
   const modelRef = useRef(model)
@@ -374,13 +380,32 @@ export default function App() {
 
   const select = useCallback((id: string) => {
     setUnfolded(new Set())
-    const g = commit((g) => { const n = find(g, id); if (n) { n.status = 'solid'; g.active = id } })
+    const g = commit((g) => {
+      const n = find(g, id)
+      if (!n) return
+      n.status = 'solid'
+      g.active = id
+      const v = g.visits ??= []
+      if (v[v.length - 1]?.id !== id) v.push({ id, t: Date.now() })
+    })
     if (!g) return
     setPan({ x: 0, y: 0 })
     const n = find(g, id)!
     if (!liveKids(g, id).length && !n.loading) expand(id)
     if (!n.research && !n.researching) doResearch(id)
   }, [commit, expand, doResearch])
+
+  // Starring is not an undo step, like selection.
+  const toggleStar = (id: string) => { commit((g) => { const n = find(g, id); if (n) n.starred = !n.starred }) }
+  const stopReplay = () => { if (!replay) return; setReplay(null); setPan({ x: 0, y: 0 }) }
+  const startReplay = () => {
+    const g = ref.current
+    const ids = (g?.visits ?? []).map((v) => v.id).filter((id) => g && find(g, id))
+    if (ids.length < 2) return
+    setPreview(null)
+    setReplay({ ids, i: 0 })
+    stepReplay.current(ids, 0)
+  }
 
   const startTopic = (e: FormEvent) => {
     e.preventDefault()
@@ -440,8 +465,9 @@ export default function App() {
   // Resting on a ghost card for 400 ms warms its children.
   const hoverGhost = (id: string, ghost: boolean) => {
     window.clearTimeout(hoverTimer.current)
-    if (ghost) hoverTimer.current = window.setTimeout(() => prefetch(id), 400)
+    if (ghost) hoverTimer.current = window.setTimeout(() => { prefetch(id); setPreview({ id, pan, zoom }) }, 400)
   }
+  const leaveCard = () => { window.clearTimeout(hoverTimer.current); setPreview(null) }
   const deeper = useCallback(() => {
     const g = ref.current
     if (!g) return
@@ -531,6 +557,7 @@ export default function App() {
         if (!textFieldUndo(e.shiftKey ? 'redo' : 'undo')) (e.shiftKey ? redo : undo)()
         return
       }
+      if (e.key === 'Escape') { setPreview(null); stopReplay() }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const typing = !!el.closest('input, textarea, select, [contenteditable]')
       if (typing) return
@@ -554,8 +581,9 @@ export default function App() {
       else if (e.key === 'ArrowLeft') { const p = find(g, g.active)?.parent; if (p) { e.preventDefault(); go(() => select(p)) } }
       else if (e.key === ' ' && !el.closest('button, a')) { e.preventDefault(); go(deeper) }
       else if (key === 'x' || e.key === 'Delete') {
-        const n = cur ? find(g, cur) : undefined
+        const n = cur ? find(g, cur) : preview ? find(g, preview.id) : undefined
         if (!n || n.parent !== g.active) return
+        setPreview(null)
         const sibs = liveKids(g, g.active)
         const i = sibs.findIndex((s) => s.id === n.id)
         const next = sibs[i + 1] ?? sibs[i - 1] ?? find(g, g.active)
@@ -563,6 +591,7 @@ export default function App() {
         dismiss(n.id)
         requestAnimationFrame(() => focusCard(next?.id, `.card.is-dismissed[data-id="${n.id}"]`))
       } else if (key === 'r') { e.preventDefault(); reroll() }
+      else if (key === 'b') { e.preventDefault(); toggleStar(g.active) }
       else if (key === 's') { e.preventDefault(); steerRef.current?.focus() }
       else if (key === 'f') { e.preventDefault(); fitRef.current() }
     }
@@ -572,6 +601,7 @@ export default function App() {
 
   // Drag the empty canvas to pan; a click on a card never starts a drag.
   const onPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
+    stopReplay()
     if (!graph || (e.target as HTMLElement).closest('.card-wrap, .fold-pill, .home, .minimap')) return
     drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }
     setDragging(true)
@@ -623,6 +653,19 @@ export default function App() {
     centreOn({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, z)
   }
   useEffect(() => { fitRef.current = graph ? fit : () => {} })
+  // Replay steps by timer; the ref keeps the latest centreOn and view without restarting the timer.
+  useEffect(() => {
+    stepReplay.current = (ids, i) => { const p = view?.pos[ids[i]]; if (p) centreOn(p, zoom) }
+  })
+  useEffect(() => {
+    if (!replay) return
+    const t = window.setTimeout(() => {
+      if (replay.i + 1 >= replay.ids.length) { setReplay(null); setPan({ x: 0, y: 0 }); return }
+      setReplay({ ...replay, i: replay.i + 1 })
+      stepReplay.current(replay.ids, replay.i + 1)
+    }, 1400)
+    return () => window.clearTimeout(t)
+  }, [replay])
   useEffect(() => {
     const el = stageRef.current
     if (!el) return
@@ -676,6 +719,7 @@ export default function App() {
     centreOn({ x: (e.clientX - r.left - mini.ox) / mini.k + mini.x0, y: (e.clientY - r.top - mini.oy) / mini.k + mini.y0 }, zoom)
   }
   const a = graph && view ? find(graph, graph.active)! : null
+  const pc = preview && preview.pan === pan && preview.zoom === zoom ? view?.cards.find((c) => c.n.id === preview.id && c.n.status === 'ghost') : undefined
   const onGraph = new Set((graph?.nodes ?? []).filter((n) => n.status === 'solid').flatMap((n) => [n.label.toLowerCase(), (n.ref ?? '').toLowerCase()]))
   const [last, ...earlier] = [...allDives].sort((x, y) => y.updated - x.updated)
   // Search: a dive matches when an opened node's label, summary or note contains the query.
@@ -861,7 +905,12 @@ export default function App() {
               ))}
               {view.cards.map((c) => (
                 <div key={c.n.id} className="card-wrap" style={c.wrap}>
-                  <button type="button" className={c.cls} data-id={c.n.id} style={c.style} onClick={() => select(c.n.id)} onPointerEnter={() => hoverGhost(c.n.id, c.cls.includes('is-ghost'))} onPointerLeave={() => window.clearTimeout(hoverTimer.current)} aria-label={c.aria}>
+                  <button type="button" className={replay?.ids[replay.i] === c.n.id ? `${c.cls} is-replay` : c.cls} data-id={c.n.id} style={c.style}
+                    onClick={() => { if (c.n.status === 'ghost') chime('open'); select(c.n.id) }}
+                    onPointerEnter={() => hoverGhost(c.n.id, c.cls.includes('is-ghost'))} onPointerLeave={leaveCard}
+                    aria-label={c.n.starred && c.n.status !== 'ghost' ? `${c.aria} (starred)` : c.aria} aria-describedby={pc?.n.id === c.n.id ? 'card-preview' : undefined}>
+                    {c.n.id === graph.active && c.n.research?.image && <img className="card-img" src={c.n.research.image} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = 'none' }} />}
+                    {c.n.starred && c.n.status !== 'ghost' && <span className="card-star" aria-hidden="true"><StarIcon on size={13} /></span>}
                     {c.aspect && <svg className="shape" viewBox="0 0 120 120" aria-hidden="true"><path d={c.n.label.length % 2 ? BURST : CLOVER} /></svg>}
                     {c.tag && <span className={`tag${c.busy ? ' pulse' : ''}`} style={{ color: c.tagColor }}>{c.tag}</span>}
                     {c.badge && <span className="card-badge" title={c.badge === 'AI' ? 'Suggested by the AI model, not found on Wikipedia' : 'Found on the web, not on Wikipedia'}>{c.badge}</span>}
@@ -873,8 +922,10 @@ export default function App() {
                   )}
                 </div>
               ))}
+              {pc && <CardPreview node={pc.n} x={(pc.wrap.left as number) + (pc.wrap.width as number) / 2 + 12} y={pc.wrap.top as number} />}
             </div>
           )}
+          {replay && graph && <ReplayChip at={replay.i + 1} total={replay.ids.length} label={find(graph, replay.ids[replay.i])?.label ?? ''} onStop={stopReplay} />}
           {mini && (
             <svg className="minimap" width="160" height="110" viewBox="0 0 160 110" aria-hidden="true" onPointerDown={onMiniClick}>
               {mini.dots.map((d) => <rect key={d.id} x={d.x} y={d.y} width="4" height="3" fill={d.hot ? 'var(--path)' : 'var(--muted)'} />)}
@@ -894,7 +945,10 @@ export default function App() {
             )}
             <div>
               <div className="label">{a.parent ? `Depth ${pathOf(graph, a.id).length - 1}` : 'Seed'}</div>
-              <h1>{a.label}</h1>
+              <div className="title-row">
+                <h1>{a.label}</h1>
+                <button type="button" className="star-btn" aria-pressed={!!a.starred} aria-label={`${a.starred ? 'Unstar' : 'Star'} ${a.label}`} title="Star to find it on Home (B)" onClick={() => toggleStar(a.id)}><StarIcon on={!!a.starred} /></button>
+              </div>
               {a.parent && <div className="path">{pathOf(graph, a.id).slice(0, -1).map((n) => n.label).join(' › ')}</div>}
             </div>
             {a.ref && (
@@ -991,6 +1045,7 @@ export default function App() {
             <div className="quiet-actions">
               <button type="button" className="link-btn" onClick={() => doResearch(a.id)} disabled={!!a.researching}>Research again</button>
               <button type="button" className="link-btn" onClick={() => dismiss(a.id)} disabled={!a.parent}>Dismiss node</button>
+              <button type="button" className="link-btn" onClick={startReplay} disabled={(graph.visits?.length ?? 0) < 2 || !!replay}>Replay trail</button>
               <button type="button" className="link-btn" onClick={() => setExportMode('md')}>Export dive…</button>
             </div>
             </>)}
