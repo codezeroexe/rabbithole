@@ -6,7 +6,7 @@ import type { LocalModel, Settings } from './ai.ts'
 import type { Graph } from './graph.ts'
 import { applyM3, DEFAULT_SEED, hslHex, hueSat, m3Vars, SEEDS } from './m3.ts'
 import { forgetCache } from './net.ts'
-import { BREADTH, prefs, request, setPrefs, SHORTCUTS } from './prefs.ts'
+import { applyGlass, BREADTH, prefs, request, setPrefs, SHORTCUTS } from './prefs.ts'
 import type { Prefs } from './prefs.ts'
 import { Mark } from './App.tsx'
 
@@ -79,7 +79,7 @@ export function SettingsWindow() {
     document.documentElement.dataset.platform = bridge?.platform ?? 'web'
     bridge?.getSettings().then(setInitial).catch((e) => setError((e as Error).message))
   }, [])
-  useEffect(() => { document.documentElement.dataset.theme = theme; applyM3(theme, seed) }, [theme, seed])
+  useEffect(() => { document.documentElement.dataset.theme = theme; applyM3(theme, seed); applyGlass() }, [theme, seed])
   const label = PANES.find((p) => p.id === pane)!.label
   // The title names the visible pane.
   useEffect(() => {
@@ -112,7 +112,7 @@ export function SettingsWindow() {
       </header>
       <main id="settings-pane" className="settings-body" role="tabpanel" aria-labelledby={`tab-${pane}`}>
         {pane === 'general' && <General />}
-        {pane === 'appearance' && <Appearance theme={theme} setTheme={setTheme} seed={seed} setSeed={setSeed} />}
+        {pane === 'appearance' && <Appearance theme={theme} setTheme={setTheme} seed={seed} setSeed={setSeed} settings={initial} onSaved={setInitial} />}
         {pane === 'research' && (error ? <p className="error" role="alert">{error}</p>
           : initial ? <Research initial={initial} onSaved={setInitial} />
           : <p className="muted">{bridge ? 'Loading…' : 'Choosing a backend needs the desktop app.'}</p>)}
@@ -168,8 +168,13 @@ function General() {
 }
 
 // ---------- Appearance ----------
-function Appearance({ theme, setTheme, seed, setSeed }: { theme: Theme; setTheme: (t: Theme) => void; seed: string; setSeed: (s: string) => void }) {
+function Appearance({ theme, setTheme, seed, setSeed, settings, onSaved }: { theme: Theme; setTheme: (t: Theme) => void; seed: string; setSeed: (s: string) => void; settings: Settings | null; onSaved: (s: Settings) => void }) {
   const dark = matchMedia('(prefers-color-scheme: dark)').matches
+  const [glass, setGlass] = useState(() => prefs().glass)
+  const pickGlass = (v: number) => { setGlass(v); setPrefs({ glass: v }); applyGlass() }
+  // Light and Dark pin the appearance for this app only; the main process applies it to every window.
+  const pickAppearance = (a: 'system' | 'light' | 'dark') => { bridge?.setSettings({ appearance: a }).then(onSaved).catch(() => {}) }
+  const appearance = settings?.appearance ?? 'system'
   // The theme applies at once, here and in the main window.
   const pickTheme = (t: Theme) => {
     setTheme(t)
@@ -183,7 +188,18 @@ function Appearance({ theme, setTheme, seed, setSeed }: { theme: Theme; setTheme
   }
   return (
     <>
-      <Group title="Theme" foot="Light or dark follows your system setting.">
+      {bridge && (
+        <Group foot={appearance === 'system' ? 'Matches your Mac or PC, and switches when it does.' : `Rabbithole stays ${appearance} whatever the system uses.`}>
+          <Row label="Appearance">
+            <div className="segmented" role="radiogroup" aria-label="Appearance">
+              {(['system', 'light', 'dark'] as const).map((a) => (
+                <button key={a} type="button" role="radio" aria-checked={appearance === a} onClick={() => pickAppearance(a)}>{a === 'system' ? 'System' : a === 'light' ? 'Light' : 'Dark'}</button>
+              ))}
+            </div>
+          </Row>
+        </Group>
+      )}
+      <Group title="Theme">
         {/* Each tile is drawn in its own theme's colors. */}
         <div className="themes" role="radiogroup" aria-label="Theme">
           {THEMES.map((t) => (
@@ -196,13 +212,22 @@ function Appearance({ theme, setTheme, seed, setSeed }: { theme: Theme; setTheme
           ))}
         </div>
       </Group>
+      {theme === 'glass' && (
+        <Group title="Liquid Glass" foot="Clear shows more of what is behind the sidebar and inspector; Tinted makes them more opaque and easier to read. On macOS 27 the window material also follows the slider in System Settings › Appearance.">
+          <div className="glass-slider">
+            <input id="glass" type="range" min={0} max={1} step={0.05} list="glass-notches" value={glass} aria-label="Liquid Glass" aria-valuetext={glass < 0.25 ? 'Clear' : glass > 0.75 ? 'Tinted' : 'Medium'} onChange={(e) => pickGlass(Number(e.target.value))} />
+            <datalist id="glass-notches"><option value="0" /><option value="0.5" /><option value="1" /></datalist>
+            <div className="glass-labels" aria-hidden="true"><span>Clear</span><span>Medium</span><span>Tinted</span></div>
+          </div>
+        </Group>
+      )}
       {theme === 'm3' && (
-        <Group title="Seed color" foot="Every color in the app is a tone of this one, as on Android.">
+        <Group title="Seed color" foot="Every color in the app is a tone of this one, as on Android. Pick Monochrome, or any gray, for an all-grayscale look.">
           <div className="seed-picker">
             <div className="wheel" role="group" aria-label="Seed color wheel">
               {Array.from({ length: 12 }, (_, i) => {
                 const hex = hslHex(i * 30, 0.6, 0.5), a = (i * 30 * Math.PI) / 180
-                return <button key={hex} type="button" aria-label={`Hue ${i * 30}°`} aria-pressed={hueSat(seed).h === hueSat(hex).h}
+                return <button key={hex} type="button" aria-label={`Hue ${i * 30}°`} aria-pressed={hueSat(seed).s >= 0.06 && hueSat(seed).h === hueSat(hex).h}
                   style={{ left: 110 + 93 * Math.cos(a), top: 110 + 93 * Math.sin(a), background: hex }} onClick={() => pickSeed(hex)} />
               })}
               <span className="seed">{seed.toUpperCase()}</span>

@@ -10,6 +10,7 @@ export type Settings = {
   models: Record<string, string>
   urls: Record<string, string>
   search: string
+  appearance?: 'system' | 'light' | 'dark'
   keysSet: Record<string, boolean>
   backends: BackendInfo[]
   searchProviders: { id: string; label: string }[]
@@ -22,7 +23,7 @@ export type LocalModel = { id: string; label: string; size: string; downloaded: 
 type Bridge = {
   platform: string
   getSettings(): Promise<Settings>
-  setSettings(patch: Partial<Pick<Settings, 'backend' | 'search' | 'models' | 'urls'>>, secrets?: Record<string, string | undefined>): Promise<Settings>
+  setSettings(patch: Partial<Pick<Settings, 'backend' | 'search' | 'models' | 'urls' | 'appearance'>>, secrets?: Record<string, string | undefined>): Promise<Settings>
   listModels(backend: string): Promise<string[]>
   complete(prompt: string, schema?: object): Promise<string>
   search(query: string): Promise<SearchResult[]>

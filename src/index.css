@@ -2,10 +2,12 @@
    One layout for every theme: sidebar, header with the dive's actions, graph, inspector.
    A theme changes material, shape, type and one signature detail, never where things are.
    Each theme has a light and a dark palette that follows the system appearance
-   (prefers-color-scheme), so there is no separate light/dark switch in the app. */
+   (prefers-color-scheme). Settings can pin Light or Dark; the main process sets nativeTheme, which
+   drives prefers-color-scheme, so the themes need nothing extra for it. */
 
 /* Layout tokens every theme starts from; a theme overrides only what differs. */
-:root {
+/* Theme tiles in Settings take these defaults too, so a tile never inherits the live theme's colors. */
+:root, :where(.theme-mini) {
   --frame: var(--bg); --side-bg: var(--panel); --side-m: 0; --side-r: 0; --side-border: 1px solid var(--border); --side-shadow: none; --blur: none;
   --item-h: 32px; --item-r: var(--radius); --item-on: var(--seg-bg); --item-on-text: var(--text); --pip: transparent;
   --layer-r: 0; --layer-border: none; --header-border: 1px solid var(--border);
@@ -23,12 +25,14 @@
   --square: path('M 8 0 H 40 Q 48 0 48 8 V 40 Q 48 48 40 48 H 8 Q 0 48 0 40 V 8 Q 0 0 8 0 Z');
 }
 
-/* Liquid Glass (macOS 26): the sidebar and inspector float on glass; the graph stays an opaque content surface. */
+/* Liquid Glass (macOS 27): the sidebar and inspector run flush to the window edges as glass, the
+   toolbar is one with the content, and contrast is higher than macOS 26. --glass (0 clear, 0.5
+   medium, 1 tinted) is the app's copy of macOS 27's Liquid Glass slider: it sets fill and blur. */
 [data-theme='glass'] {
-  --bg: #f2f2f7; --header: transparent; --panel: rgba(255, 255, 255, 0.6); --surface: #ffffff; --btn: rgba(0, 0, 0, 0.05); --stage: #ffffff;
-  --border: rgba(0, 0, 0, 0.1); --ctrl-border: #86868b; --text: #1d1d1f; --text2: #6e6e73; --muted: #6e6e73;
+  --bg: #f2f2f7; --header: transparent; --panel: rgb(250 250 252 / calc(0.4 + var(--glass, 0.5) * 0.55)); --surface: #ffffff; --btn: rgba(0, 0, 0, 0.05); --stage: #ffffff;
+  --border: rgba(0, 0, 0, 0.13); --ctrl-border: #7c7c82; --text: #1d1d1f; --text2: #5c5c61; --muted: #5c5c61;
   --active: #0071e3; --halo: 0 8px 20px rgba(0, 0, 0, 0.1); --node-solid: #1d1d1f;
-  --steer-ring: #6e6e73; --tangent: #c93400; --tangent-text: #a32a00; --edge: #b9b9c0; --edge-faint: #d8d8de; --path: #0071e3;
+  --steer-ring: #5c5c61; --tangent: #c93400; --tangent-text: #a32a00; --edge: #a8a8b0; --edge-faint: #d8d8de; --path: #0071e3;
   --range: #0071e3; --primary-bg: #0071e3; --primary-text: #ffffff;
   --kbd-border: #86868b; --link: #0066cc; --eyebrow: #6e6e73; --crumb-bg: rgba(0, 0, 0, 0.07); --crumb-color: #1d1d1f; --crumb-decor: none;
   --seg-bg: rgba(0, 0, 0, 0.05); --seg-on: #ffffff; --seg-on-text: #1d1d1f;
@@ -38,10 +42,10 @@
   --brand-font: var(--display); --brand-weight: 700; --brand-case: none; --crumb-case: none;
   --h1: 30px; --h1-weight: 700; --h2: 12px; --h2-font: var(--sans); --h2-color: var(--text2); --h2-case: none; --h2-track: 0;
   --title-size: 18px; --radius: 999px; --card-radius: 14px; --active-radius: 16px;
-  --frame: linear-gradient(135deg, #dfe7f3, #f1e9f2); --side-bg: rgba(255, 255, 255, 0.6); --side-m: 10px; --side-r: 18px; --side-border: none;
-  --side-shadow: 0 10px 30px rgba(0, 0, 0, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.4); --blur: blur(30px) saturate(180%);
+  --frame: #e8e8ed; --side-bg: rgb(246 246 249 / calc(0.25 + var(--glass, 0.5) * 0.7)); --side-m: 0; --side-r: 0; --side-border: 1px solid rgba(0, 0, 0, 0.12);
+  --side-shadow: none; --blur: blur(calc(12px + var(--glass, 0.5) * 28px)) saturate(170%);
   --item-r: 8px; --item-on: rgba(0, 0, 0, 0.06); --item-on-text: #0071e3; --header-border: none;
-  --insp-bg: rgba(255, 255, 255, 0.6); --insp-m: 0 10px 10px 0; --insp-border: none; --stage-bg: #ffffff; --aspect-bg: #f5f5f7;
+  --insp-bg: var(--side-bg); --insp-m: 0; --insp-r: 0; --insp-border: 1px solid rgba(0, 0, 0, 0.12); --stage-bg: #ffffff; --aspect-bg: #f5f5f7;
   --label-font: var(--sans); --label-case: none; --label-track: 0; --q-size: 52px; --field-r: 10px; --field-bg: rgba(0, 0, 0, 0.05); --field-border: none; --field-under: none; --resume-r: 16px;
   color-scheme: light;
 }
@@ -126,7 +130,7 @@
   --frame: radial-gradient(#d6d6d6 1px, transparent 1.3px) 0 0 / 16px 16px, #f2f2f2;
   --side-bg: rgba(255, 255, 255, 0.72); --side-m: 10px; --side-r: 24px; --side-border: none; --side-shadow: inset 0 0 0 1px var(--glass-border); --blur: blur(24px) saturate(1.4);
   --item-h: 36px; --item-r: 999px; --item-on: #000000; --item-on-text: #ffffff; --header-border: none;
-  --insp-bg: rgba(255, 255, 255, 0.72); --insp-m: 0 10px 10px 0; --insp-border: none; --stage-bg: transparent; --ghost-bg: rgba(255, 255, 255, 0.72);
+  --insp-bg: rgba(255, 255, 255, 0.72); --insp-m: 0 10px 10px 0; --insp-mt: 10px; --insp-mr: 10px; --insp-border: none; --stage-bg: transparent; --ghost-bg: rgba(255, 255, 255, 0.72);
   --active-bg: #000000; --active-fg: #ffffff; --active-fg2: rgba(255, 255, 255, 0.72); --active-border: none;
   --go-bg: #d71920; --go-fg: #ffffff; --go-r: 999px; --label-track: 0.08em;
   --q-size: 64px; --q-weight: 400; --q-track: -0.02em;
@@ -143,7 +147,7 @@
   --title-size: 22px; --radius: 999px; --card-radius: 20px; --active-radius: 32px; --active-border: none;
   --disp-var: 'wdth' 120, 'opsz' 144;
   --side-r: 0 24px 24px 0; --side-border: none; --item-h: 48px; --item-r: 999px; --header-border: none;
-  --insp-m: 8px 8px 8px 0; --insp-r: 28px; --insp-border: none; --go-r: 16px;
+  --insp-m: 8px 8px 8px 0; --insp-mt: 8px; --insp-mr: 8px; --insp-r: 28px; --insp-border: none; --go-r: 16px;
   --label-font: var(--sans); --q-size: 68px; --q-weight: 800; --q-track: -0.03em;
   --field-r: 28px; --field-border: none; --field-under: none; --resume-r: 32px; --resume-border: none; --list-font: var(--sans); --list-size: 18px;
   --shape: path('M 24 3.2 L 28.4 4.9 L 31.6 8.9 L 35 13 L 39.1 16.4 L 43.1 19.6 L 44.8 24 L 43.1 28.4 L 39.1 31.6 L 35 35 L 31.6 39.1 L 28.4 43.1 L 24 44.8 L 19.6 43.1 L 16.4 39.1 L 13 35 L 8.9 31.6 L 4.9 28.4 L 3.2 24 L 4.9 19.6 L 8.9 16.4 L 13 13 L 16.4 8.9 L 19.6 4.9 Z');
@@ -152,16 +156,16 @@
 
 @media (prefers-color-scheme: dark) {
   [data-theme='glass'] {
-    --bg: #1c1c1e; --panel: rgba(44, 44, 48, 0.6); --surface: #2c2c2e; --btn: rgba(255, 255, 255, 0.08); --stage: #1c1c1e;
-    --border: rgba(255, 255, 255, 0.12); --ctrl-border: #757579; --text: #f5f5f7; --text2: #a1a1a6; --muted: #a1a1a6;
+    --bg: #1c1c1e; --panel: rgb(40 40 44 / calc(0.4 + var(--glass, 0.5) * 0.55)); --surface: #2c2c2e; --btn: rgba(255, 255, 255, 0.08); --stage: #1c1c1e;
+    --border: rgba(255, 255, 255, 0.15); --ctrl-border: #808085; --text: #f5f5f7; --text2: #b1b1b6; --muted: #b1b1b6;
     --active: #0a84ff; --halo: 0 8px 20px rgba(0, 0, 0, 0.4); --node-solid: #f5f5f7;
     --steer-ring: #a1a1a6; --tangent: #ff9f0a; --tangent-text: #ff9f0a; --edge: #636366; --edge-faint: #3a3a3c; --path: #0a84ff;
     --range: #0a84ff; --primary-bg: #0a84ff;
     --kbd-border: #757579; --link: #64b5ff; --eyebrow: #a1a1a6; --crumb-bg: rgba(255, 255, 255, 0.14); --crumb-color: #f5f5f7;
     --seg-bg: rgba(255, 255, 255, 0.08); --seg-on: rgba(255, 255, 255, 0.22); --seg-on-text: #f5f5f7;
     --scrim: rgba(0, 0, 0, 0.55); --error: #ff6961;
-    --frame: linear-gradient(135deg, #1b2433, #2a1f2e); --side-bg: rgba(44, 44, 48, 0.6); --side-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-    --item-on: rgba(255, 255, 255, 0.1); --item-on-text: #4da3ff; --insp-bg: rgba(44, 44, 48, 0.6); --stage-bg: #1c1c1e; --aspect-bg: #242426; --field-bg: rgba(255, 255, 255, 0.08);
+    --frame: #161618; --side-bg: rgb(36 36 40 / calc(0.25 + var(--glass, 0.5) * 0.7)); --side-border: 1px solid rgba(255, 255, 255, 0.1); --insp-border: 1px solid rgba(255, 255, 255, 0.1);
+    --item-on: rgba(255, 255, 255, 0.1); --item-on-text: #4da3ff; --stage-bg: #1c1c1e; --aspect-bg: #242426; --field-bg: rgba(255, 255, 255, 0.08);
     color-scheme: dark;
   }
   [data-theme='winui'] {
@@ -292,9 +296,11 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .toolbar { display: flex; align-items: center; gap: 8px; }
 .toolbar .btn { min-height: 32px; }
 .toolbar .segmented button { min-height: 28px; flex: 0 0 auto; }
-.crumbs { min-width: 0; overflow: hidden; }
+.crumbs { min-width: 0; overflow-x: auto; scrollbar-width: none; -webkit-app-region: no-drag; -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l, 0px), #000 calc(100% - var(--fade-r, 0px)), transparent); mask-image: linear-gradient(to right, transparent, #000 var(--fade-l, 0px), #000 calc(100% - var(--fade-r, 0px)), transparent); }
+.crumbs::-webkit-scrollbar { display: none; }
+/* Short of room, the crumbs scroll sideways, opening on the current one; a fade marks each side with more. */
 .crumbs ol { display: flex; align-items: center; gap: 2px; margin: 0; padding: 0; list-style: none; font-family: var(--crumb-font); font-size: 13px; text-transform: var(--crumb-case); letter-spacing: var(--label-track); white-space: nowrap; }
-.crumbs li { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.crumbs li { display: flex; flex-shrink: 0; align-items: center; gap: 2px; }
 .crumbs .sep { color: var(--text2); }
 .crumbs button { min-height: 30px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; padding: 4px 8px; border: none; border-radius: var(--item-r); background: transparent; color: var(--text2); text-transform: inherit; letter-spacing: inherit; }
 .crumbs button:hover { color: var(--text); }
@@ -303,9 +309,13 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 .body { flex: 1 1 auto; min-height: 0; display: flex; }
 .stage { flex: 1 1 auto; min-width: 0; position: relative; overflow: hidden; outline: none; touch-action: none; cursor: grab; }
 .stage.dragging { cursor: grabbing; }
-.panel { flex: 0 0 360px; min-height: 0; padding: 20px 20px 28px; margin: var(--insp-m); display: flex; flex-direction: column; gap: 18px; background: var(--insp-bg); border-left: var(--insp-border); border-radius: var(--insp-r); box-shadow: var(--side-shadow); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); overflow-y: auto; }
+.panel { flex: 0 0 var(--insp-w); min-height: 0; padding: 20px 20px 28px; margin: var(--insp-m); display: flex; flex-direction: column; gap: 18px; background: var(--insp-bg); border-left: var(--insp-border); border-radius: var(--insp-r); box-shadow: var(--side-shadow); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); overflow-y: auto; }
+/* Every theme: the inspector runs the full height, rising beside the toolbar, and the toolbar's controls stop at its edge. */
+:where(:root) { --insp-w: 360px; --insp-mt: 0px; --insp-mr: 0px; }
+.main:has(.panel) .header { padding-right: calc(var(--insp-w) + var(--insp-mr) + 16px); }
+.panel { margin-top: calc(var(--insp-mt) - 52px); padding-top: calc(72px - var(--insp-mt)); }
 .status { display: none; }
-@media (max-width: 860px) { .side { display: none; } .panel { flex-basis: 300px; } }
+@media (max-width: 860px) { .side { display: none; } .panel { flex-basis: 300px; } :root { --insp-w: 300px; } }
 
 /* ---------- Graph ---------- */
 .swatch { display: inline-block; width: 14px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
@@ -347,7 +357,7 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius
 [data-theme='glass'] .segmented, [data-theme='nothing'] .segmented, [data-theme='warm'] .segmented, [data-theme='m3'] .segmented { border-radius: 999px; }
 .segmented button { flex: 1 1 0; min-height: 30px; padding: 0 10px; border: none; border-radius: var(--radius); background: transparent; color: var(--text2); font-size: 13px; }
 .segmented button:hover { color: var(--text); }
-.segmented button[aria-pressed='true'] { background: var(--seg-on); color: var(--seg-on-text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.segmented button[aria-pressed='true'], .segmented button[aria-checked='true'] { background: var(--seg-on); color: var(--seg-on-text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
 
 /* ---------- Home: the logo, one question, one box, where you left off, earlier dives ---------- */
 .home { position: absolute; inset: 0; overflow-y: auto; display: flex; justify-content: center; padding: clamp(32px, 7vh, 80px) 32px 56px; cursor: default; }
@@ -493,17 +503,18 @@ textarea.field { resize: vertical; padding: 10px 12px; min-height: 80px; border-
    Windows 11 + WinUI 3: Mica shows behind the pane and around the content layer. */
 [data-platform='darwin'][data-theme='glass'] body,
 [data-platform='win32'][data-theme='winui'] body { background: transparent; }
-[data-platform='darwin'][data-theme='glass'] { --frame: transparent; --side-bg: rgba(255, 255, 255, 0.35); --insp-bg: rgba(255, 255, 255, 0.5); }
-@media (prefers-color-scheme: dark) { [data-platform='darwin'][data-theme='glass'] { --side-bg: rgba(30, 30, 32, 0.35); --insp-bg: rgba(30, 30, 32, 0.5); } }
-[data-platform='darwin'][data-theme='glass'] .main { margin: 10px 0 10px 0; border-radius: 14px 0 0 14px; }
+[data-platform='darwin'][data-theme='glass'] { --frame: transparent; --side-bg: rgb(255 255 255 / calc(var(--glass, 0.5) * 0.75)); }
+@media (prefers-color-scheme: dark) { [data-platform='darwin'][data-theme='glass'] { --side-bg: rgb(30 30 32 / calc(var(--glass, 0.5) * 0.75)); } }
 [data-platform='win32'][data-theme='winui'] { --frame: transparent; }
 [data-theme='winui'] .btn { border-color: var(--border); border-bottom-color: var(--ctrl-border); }
 
 /* ---------- Per-theme signatures ---------- */
-/* Glass: the content layer is a rounded opaque sheet between the two glass panes. */
-[data-theme='glass'] .main { margin: 10px 0; border-radius: 14px; box-shadow: 0 1px 0 var(--border); }
-[data-theme='glass'] .panel { margin: 10px 10px 10px 10px; }
+/* Glass: the graph and the unified toolbar are opaque content; the inspector lets the material through. */
+[data-theme='glass'] .main { background: transparent; }
+[data-theme='glass'] .header, [data-theme='glass'] .stage { background: var(--stage-bg); }
 [data-theme='glass'] .body { gap: 0; }
+[data-theme='glass'] .header { position: relative; z-index: 1; }
+[data-theme='glass'] .main:has(.panel) .header { background: linear-gradient(to right, var(--stage-bg) calc(100% - var(--insp-w)), transparent 0); }
 /* Obsidian: a status bar, monospace counts, straight graph. */
 [data-theme='obsidian'] .status { display: flex; height: 24px; flex: 0 0 24px; align-items: center; justify-content: flex-end; gap: 16px; padding: 0 12px; border-top: 1px solid var(--border); background: var(--panel); font-family: var(--mono); font-size: 11px; color: var(--text2); }
 [data-theme='obsidian'] .side { background: var(--panel); }
@@ -624,3 +635,7 @@ sup a { color: var(--link); text-decoration: none; font-size: 0.75em; padding: 0
 [data-platform='win32'] .settings-bar nav button { position: relative; flex-direction: row; justify-content: flex-start; gap: 12px; min-height: 36px; padding: 0 12px; font-size: 13.5px; }
 [data-platform='win32'] .settings-bar nav button[aria-selected='true']::before { content: ''; position: absolute; left: 0; top: 50%; width: 3px; height: 16px; translate: 0 -50%; border-radius: 2px; background: var(--active); }
 @media (max-width: 560px) { .srow { flex-wrap: wrap; } .srow-ctl .field { width: 100%; } .themes { grid-template-columns: repeat(2, 1fr); } }
+.glass-slider { padding: 14px 16px 10px; }
+.glass-slider input { width: 100%; margin: 0; accent-color: var(--active); }
+.glass-labels { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11.5px; color: var(--text2); }
+.srow-ctl .segmented { min-width: 240px; }

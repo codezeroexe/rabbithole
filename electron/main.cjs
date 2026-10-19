@@ -31,7 +31,7 @@ const SEARCH = { web: 'Web: Bing + DuckDuckGo + Google News, pages read (free, n
 
 // ---------- Settings (secrets encrypted with the OS keychain via safeStorage) ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
-let settings = { backend: 'free', models: {}, urls: {}, search: 'web', secrets: {} }
+let settings = { backend: 'free', models: {}, urls: {}, search: 'web', appearance: 'system', secrets: {} }
 
 function loadSettings() {
   try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) } } catch { /* first run */ }
@@ -60,6 +60,7 @@ function publicSettings() {
     models: settings.models,
     urls: Object.fromEntries(Object.keys(BACKENDS).map((b) => [b, baseUrlFor(b)])),
     search: settings.search,
+    appearance: settings.appearance,
     keysSet: Object.fromEntries(Object.keys(settings.secrets).map((k) => [k, true])),
     backends: Object.entries(BACKENDS).map(([id, b]) => ({ id, label: b.label, key: b.key ?? false, editableUrl: !!b.editableUrl, defaultModel: b.defaultModel ?? '' })),
     searchProviders: Object.entries(SEARCH).map(([id, label]) => ({ id, label })),
@@ -386,6 +387,8 @@ const handle = (channel, fn) => ipcMain.handle(channel, async (_e, ...args) => {
 handle('settings:get', () => publicSettings())
 handle('settings:set', (patch, secrets) => {
   for (const k of ['backend', 'search']) if (typeof patch?.[k] === 'string') settings[k] = patch[k]
+  // Light, Dark or System: nativeTheme drives prefers-color-scheme in every window and the native materials.
+  if (['system', 'light', 'dark'].includes(patch?.appearance)) nativeTheme.themeSource = settings.appearance = patch.appearance
   if (patch?.models) Object.assign(settings.models, patch.models)
   if (patch?.urls) Object.assign(settings.urls, patch.urls)
   for (const [name, value] of Object.entries(secrets ?? {})) if (value !== undefined) setSecret(name, value)
@@ -527,6 +530,7 @@ if (!app.requestSingleInstanceLock()) app.quit()
 app.on('second-instance', () => { if (!mainWin) return createWindow(); if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus() })
 app.whenReady().then(() => {
   loadSettings()
+  nativeTheme.themeSource = ['light', 'dark'].includes(settings.appearance) ? settings.appearance : 'system'
   buildMenu()
   createWindow()
   app.on('activate', () => { if (!mainWin) createWindow() })

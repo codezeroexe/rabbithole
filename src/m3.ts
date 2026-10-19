@@ -1,6 +1,6 @@
 // Material 3 Expressive: every color role is a tone of one seed color (an HSL stand-in for Material's HCT).
 
-export const SEEDS = [['Violet', '#6750A4'], ['Teal', '#006A6A'], ['Rose', '#8C4A60'], ['Olive', '#5B6300']] as const
+export const SEEDS = [['Violet', '#6750A4'], ['Teal', '#006A6A'], ['Rose', '#8C4A60'], ['Olive', '#5B6300'], ['Monochrome', '#5F5F5F']] as const
 export const DEFAULT_SEED = '#6750A4'
 
 export function hueSat(hex: string) {
@@ -21,10 +21,12 @@ export const hslHex = (h: number, s: number, l: number) => {
 // The CSS custom properties the m3 theme reads, for one seed in one appearance.
 export function m3Vars(seed: string, dark: boolean): Record<string, string> {
   const { h, s } = hueSat(seed)
+  // A gray seed is Android's Monochrome style: every role is a pure gray, and primary goes to near black or white.
+  const mono = s < 0.06
   // Seeds are often muted; Material keeps the primary tones vivid, so chroma is lifted to at least ~0.55.
-  const k = Math.max(0.55, Math.min(1, s * 1.6))
+  const k = mono ? 0 : Math.max(0.55, Math.min(1, s * 1.6))
   const t = (hue: number, sat: number, light: number) => `hsl(${(hue + 360) % 360} ${Math.round(sat * k * 100)}% ${light}%)`
-  const n = (light: number, sat = 0.12) => `hsl(${h} ${Math.round(sat * 100)}% ${light}%)`
+  const n = (light: number, sat = 0.12) => `hsl(${h} ${mono ? 0 : Math.round(sat * 100)}% ${light}%)`
   const c = dark ? {
     primary: t(h, .75, 80), onPrimary: t(h, .6, 20), primaryC: t(h, .5, 30), onPrimaryC: t(h, .75, 90),
     secondary: t(h, .3, 78), secondaryC: t(h, .22, 28), onSecondaryC: t(h, .3, 88), tertiary: t(h + 60, .5, 78), tertiaryC: t(h + 60, .4, 30),
@@ -34,6 +36,7 @@ export function m3Vars(seed: string, dark: boolean): Record<string, string> {
     secondary: t(h, .22, 42), secondaryC: t(h, .32, 88), onSecondaryC: t(h, .25, 15), tertiary: t(h + 60, .45, 40), tertiaryC: t(h + 60, .65, 90),
     surface: n(98, .2), low: n(96, .18), mid: n(94, .16), high: n(92, .14), highest: n(89, .12), on: n(11, .1), onVar: n(30, .08), outline: n(47, .06), outlineVar: n(80, .1), error: '#b3261e',
   }
+  if (mono) Object.assign(c, dark ? { primary: n(92), onPrimary: n(10), primaryC: n(30), onPrimaryC: n(95) } : { primary: n(15), primaryC: n(86), onPrimaryC: n(10) })
   return {
     '--bg': c.surface, '--frame': c.surface, '--stage': c.surface, '--stage-bg': c.surface, '--header': c.surface,
     '--side-bg': c.mid, '--panel': c.mid, '--insp-bg': c.mid, '--surface': c.highest, '--ghost-bg': c.surface, '--btn': 'transparent',

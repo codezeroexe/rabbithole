@@ -6,9 +6,10 @@ export type Prefs = {
   breadth: number // spread a new dive starts with
   news: boolean // add recent headlines to research notes
   prefetch: boolean // load the next level ahead of time (free engine only)
+  glass: number // Liquid Glass from clear (0) to tinted (1), as macOS 27's slider
 }
 export const BREADTH = [{ label: 'Focus', spread: 20 }, { label: 'Balanced', spread: 50 }, { label: 'Wide', spread: 75 }, { label: 'Spread', spread: 100 }]
-const DEFAULTS: Prefs = { openLast: true, breadth: 20, news: true, prefetch: true }
+const DEFAULTS: Prefs = { openLast: true, breadth: 20, news: true, prefetch: true, glass: 0.5 }
 
 export function prefs(): Prefs {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('rh.prefs') ?? '{}') } } catch { return DEFAULTS }
@@ -34,3 +35,6 @@ export const SHORTCUTS: [string, string][] = [
   ['X or Delete', 'Dismiss the focused card'], ['R', 'Re-roll'], ['S', 'Steer'], ['F', 'Fit the path on screen'],
   [`${MOD}Z`, 'Undo'], [`${MOD === '⌘' ? '⇧⌘' : 'Ctrl+Shift+'}Z`, 'Redo'], [`${MOD}N`, 'New dive'], [`${MOD},`, 'Settings'], ['?', 'Show or hide this list'],
 ]
+
+// The glass theme reads --glass for its fill and blur.
+export const applyGlass = () => document.documentElement.style.setProperty('--glass', String(prefs().glass))

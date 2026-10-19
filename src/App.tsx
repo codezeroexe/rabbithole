@@ -13,7 +13,7 @@ import { THEMES, nativeTheme } from './Settings.tsx'
 import type { Theme } from './Settings.tsx'
 import { wikiAspectResearch, wikiHints, wikiResearch, wikiSuggest } from './wiki.ts'
 import { Reader } from './Reader.tsx'
-import { BREADTH, MOD, prefs, SHORTCUTS } from './prefs.ts'
+import { applyGlass, BREADTH, MOD, prefs, SHORTCUTS } from './prefs.ts'
 import { forgetCache } from './net.ts'
 import { applyM3, BURST, CLOVER, DEFAULT_SEED } from './m3.ts'
 
@@ -28,6 +28,11 @@ const load = <T,>(key: string, fallback: T): T => {
 const save = (key: string, value: unknown) => { try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* storage unavailable */ } }
 
 type Dive = { id: string; updated: number; graph: Graph }
+// Fade whichever side of the breadcrumb strip has more crumbs scrolled out of view.
+const fadeCrumbs = (el: HTMLElement) => {
+  el.style.setProperty('--fade-l', el.scrollLeft > 1 ? '20px' : '0px')
+  el.style.setProperty('--fade-r', el.scrollLeft + el.clientWidth < el.scrollWidth - 1 ? '20px' : '0px')
+}
 const clone = (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n) => ({ ...n })), notes: { ...g.notes } })
 let reqSeq = 1
 
@@ -126,6 +131,7 @@ export default function App() {
   const [wheeling, setWheeling] = useState(false)
   const [size, setSize] = useState({ w: 0, h: 0 })
   const stageRef = useRef<HTMLElement>(null)
+  const crumbsRef = useRef<HTMLElement>(null)
   const wheelTimer = useRef(0)
   const hoverTimer = useRef(0)
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null)
@@ -136,10 +142,12 @@ export default function App() {
   // Material 3: the seed color from Settings drives every color role; Settings saves it, this window follows.
   const [seed, setSeed] = useState(() => load('rh.seed', DEFAULT_SEED))
   useEffect(() => applyM3(theme, seed), [theme, seed])
+  useEffect(applyGlass, [])
   const requestRef = useRef<(type: string) => void>(() => {})
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'rh.seed' && e.newValue) setSeed(JSON.parse(e.newValue))
+      if (e.key === 'rh.prefs') applyGlass()
       // The Settings window changed the saved dives or emptied the cache.
       if (e.key === 'rh.request' && e.newValue) requestRef.current(JSON.parse(e.newValue).type)
     }
@@ -649,6 +657,16 @@ export default function App() {
     : earlier.map((d) => ({ d, ns: [] }))
   const recent = [...allDives].sort((x, y) => y.updated - x.updated).slice(0, 12)
 
+  // Open the breadcrumbs on the current stop whenever it changes or the window resizes.
+  useEffect(() => {
+    const el = crumbsRef.current
+    if (!el) return
+    const end = () => { el.scrollLeft = el.scrollWidth; fadeCrumbs(el) }
+    end()
+    const ro = new ResizeObserver(end)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [graph?.active])
   return (
     <div className="app">
       <nav className="side" aria-label="Dives">
@@ -695,7 +713,8 @@ export default function App() {
         {/* Where you are, then the actions on this view. */}
         <header className="header">
           {graph ? (
-            <nav className="crumbs" aria-label="Breadcrumb">
+            <nav className="crumbs" aria-label="Breadcrumb" ref={crumbsRef} onScroll={(e) => fadeCrumbs(e.currentTarget)}
+              onWheel={(e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY }}>
               <ol>
                 {pathOf(graph, graph.active).map((n, i, all) => (
                   <li key={n.id}>
